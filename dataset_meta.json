@@ -1,12 +1,13 @@
 {
-  "generated_at": "2026-11-14T19:31:24.152686+00:00",
-  "detections_rows": 1532004,
-  "rows": 35451,
+  "generated_at": "2026-11-14T20:07:31.925394+00:00",
+  "detections_rows": 1535796,
+  "rows": 35652,
+  "globe_cells": 3000,
   "metrics": {
-    "r2": 0.5575,
-    "mae": 10.16,
-    "conformal_q90_log": 1.4123,
+    "r2": 0.5623,
+    "mae": 10.1,
+    "conformal_q90_log": 1.4164,
     "coverage90_pct": 90.0,
-    "overlap_rows": 33826
+    "overlap_rows": 34043
   }
 }
