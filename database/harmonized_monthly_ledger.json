@@ -1,10 +1,11 @@
 {
   "meta": {
-    "updatedAtIso": "2026-11-14T21:16:49.918Z",
+    "updatedAtIso": "2026-11-14T21:23:48.471Z",
     "repo": "AriyaMon/NasaSpaceAppsFireLedger",
     "rawModisRowsSynced": 5587,
     "rawViirsRowsSynced": 25000,
     "rawLandsatNrtRowsSynced": 6517,
+    "liveFirmsRowsPulledThisRun": 0,
     "parquetDetectionsCount": 1535796,
     "harmonizedMonthlyParquetRows": 35652,
     "harmonizedGlobalCells": 3000,
