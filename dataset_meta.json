@@ -1,13 +1,6 @@
 {
-  "generated_at": "2026-11-14T20:07:31.925394+00:00",
-  "detections_rows": 1535796,
-  "rows": 35652,
-  "globe_cells": 3000,
-  "metrics": {
-    "r2": 0.5623,
-    "mae": 10.1,
-    "conformal_q90_log": 1.4164,
-    "coverage90_pct": 90.0,
-    "overlap_rows": 34043
-  }
+  "generated_at": "2026-11-14T21:07:07.213095+00:00",
+  "detections_rows": 0,
+  "rows": 0,
+  "note": "Check FIRMS_MAP_KEY or FIRMS API output logs above."
 }
