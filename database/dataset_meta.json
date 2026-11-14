@@ -1,24 +1,29 @@
 {
-  "updatedAtIso": "2026-11-14T20:37:38.092Z",
+  "updatedAtIso": "2026-11-14T20:48:30.298Z",
   "repo": "AriyaMon/NasaSpaceAppsFireLedger",
-  "rawModisRowsSynced": 5000,
-  "rawViirsRowsSynced": 8000,
-  "rawLandsatNrtRowsSynced": 1977,
+  "rawModisRowsSynced": 5587,
+  "rawViirsRowsSynced": 25000,
+  "rawLandsatNrtRowsSynced": 6517,
+  "parquetDetectionsCount": 1535796,
+  "harmonizedMonthlyParquetRows": 35652,
+  "harmonizedGlobalCells": 3000,
   "harmonizedGlobalMonths": 312,
-  "pipelineVersion": "FireLedger-2026.2",
+  "pipelineVersion": "FireLedger-2026.3-KaggleGithub",
   "showcaseRegionsPreCached": [
     "chilecito",
     "quebec",
     "custom_demo"
   ],
   "sensorsIncluded": [
-    "MODIS (Terra/Aqua 1 km)",
-    "VIIRS (S-NPP/NOAA-20/NOAA-21 375 m)",
-    "Landsat 8/9 (30 m)"
+    "VIIRS_SNPP_NRT (Suomi NPP · 375 m)",
+    "VIIRS_NOAA20_NRT (NOAA-20 · 375 m)",
+    "VIIRS_NOAA21_NRT (NOAA-21 · 375 m)",
+    "MODIS_NRT (Terra/Aqua · 1 km)",
+    "LANDSAT_NRT (OLI-2/TIRS-2 · 30 m)"
   ],
   "harmonizationSummary": {
-    "oofR2": 0.98,
-    "conformalCoverage90Pct": 97.8,
+    "oofR2": 0.5623,
+    "conformalCoverage90Pct": 90,
     "landsatAnchoredCoveragePct": 98.5
   }
 }
