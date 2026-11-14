@@ -4,17 +4,18 @@ Harmonized **MODIS (1 km)**, **VIIRS (375 m)**, and **Landsat 8/9 (30 m)** 26-ye
 
 ## Public Team Viewer (GitHub Pages)
 
-This repository includes a public GitHub Pages workflow (`.github/workflows/deploy-pages.yml`) that builds the `dev` (and `main`) branch directly into a public static web viewer so every project member can open the live site without private AI Studio permissions:
+- **Live Public URL**: `https://hackathonteam12341.github.io/NasaSpaceAppsFireLedger/`
 
-- **Live Public URL**: `https://ariyamon.github.io/NasaSpaceAppsFireLedger/`
+### Why Deploying Directly from a Source Branch (`dev` / `site-david`) Shows a Blank Page
+Because FireLedger is a **Vite + React + TypeScript** app, the source `index.html` in `dev` points to `<script type="module" src="/src/main.tsx"></script>`. Browsers cannot execute uncompiled `.tsx` files directly, so if GitHub Pages is configured to deploy raw source files from `dev` or `site-david`, the page renders blank white.
 
-### Enabling Public Hosting on GitHub (One-Time Setup)
-1. Push this updated `dev` branch to `https://github.com/AriyaMon/NasaSpaceAppsFireLedger.git`.
-2. Open the repository on GitHub → **Settings** → **Pages**.
-3. Under **Build and deployment → Source**, select **GitHub Actions**.
-4. The workflow automatically triggers on pushes to `dev` or `main` (or via **Actions → Deploy FireLedger to GitHub Pages → Run workflow**) and publishes the live observatory URL for all team members.
+Instead, `.github/workflows/deploy-pages.yml` automatically compiles the TypeScript/React code via `vite build` into static JavaScript/CSS bundles (`dist/`) and supports **both** GitHub Pages modes:
 
-> When hosted statically on GitHub Pages, FireLedger automatically switches from `/api/*` server endpoints to its built-in client-side harmonization engine (`src/lib/*`) and public GitHub raw data sync, keeping the 3D globe, timeline simulator, charts, responder briefings, and CSV/GeoJSON exports 100% functional.
+1. **Option A — GitHub Actions (Recommended)**:
+   - Go to **Settings → Pages → Build and deployment → Source** and select **GitHub Actions**.
+2. **Option B — Deploy from a branch (`gh-pages`)**:
+   - Every run of `.github/workflows/deploy-pages.yml` also pushes the compiled `dist/` bundle to the **`gh-pages`** branch.
+   - If you keep **Source** set to **Deploy from a branch**, change the branch dropdown from `site-david` / `dev` to **`gh-pages` (`/ (root)`)** and click **Save**.
 
 ---
 

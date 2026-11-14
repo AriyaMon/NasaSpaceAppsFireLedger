@@ -30,7 +30,7 @@ function normalizeGithubRepo(raw?: string): string {
     .replace(/\/(tree|blob)\/.*$/, '')
     .replace(/\.git$/i, '')
     .replace(/^\/+|\/+$/g, '');
-  return s || 'AriyaMon/NasaSpaceAppsFireLedger';
+  return s || 'HackathonTeam12341/NasaSpaceAppsFireLedger';
 }
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');

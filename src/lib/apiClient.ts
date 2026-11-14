@@ -21,7 +21,7 @@ import type {
 } from './types.ts';
 import { buildWaitTimeBridge } from './waitTimeBridge.ts';
 
-export const DEFAULT_GITHUB_REPO = 'AriyaMon/NasaSpaceAppsFireLedger';
+export const DEFAULT_GITHUB_REPO = 'HackathonTeam12341/NasaSpaceAppsFireLedger';
 
 export interface MetaResponse {
   firmsConfigured: boolean;
@@ -187,9 +187,11 @@ async function fetchPublicGithubDatasetCounts(repo: string): Promise<{
       const meta = (await metaResp.json()) as {
         rawModisRows?: number;
         rawViirsRows?: number;
+        rawModisRowsSynced?: number;
+        rawViirsRowsSynced?: number;
       };
-      modisRows = Number(meta.rawModisRows ?? 0);
-      viirsRows = Number(meta.rawViirsRows ?? 0);
+      modisRows = Number(meta.rawModisRowsSynced ?? meta.rawModisRows ?? 0);
+      viirsRows = Number(meta.rawViirsRowsSynced ?? meta.rawViirsRows ?? 0);
     }
   } catch {
     // Non-fatal in offline/sandboxed mode
