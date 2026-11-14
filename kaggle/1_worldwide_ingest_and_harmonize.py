@@ -21,7 +21,7 @@ What this script does end-to-end:
 Required Kaggle Secrets / Environment Variables:
 - FIRMS_MAP_KEY : Your NASA FIRMS API key
 - GITHUB_TOKEN  : Fine-grained GitHub PAT with Contents: Read & Write
-- GITHUB_REPO   : e.g. "AriyaMon/NasaSpaceAppsFireLedger"
+- GITHUB_REPO   : e.g. "[REDACTED]"
 """
 
 import io
@@ -64,17 +64,18 @@ def normalize_github_repo(raw: str) -> str:
     s = re.sub(r"^https?://github\.com/", "", s, flags=re.IGNORECASE)
     s = re.sub(r"/(tree|blob)/.*$", "", s)
     s = re.sub(r"\.git$", "", s, flags=re.IGNORECASE)
-    return s.strip("/") or "AriyaMon/NasaSpaceAppsFireLedger"
+    return s.strip("/") or "[REDACTED]"
 
 
 FIRMS_MAP_KEY = _get_secret("FIRMS_MAP_KEY")
 GITHUB_TOKEN = _get_secret("GITHUB_TOKEN")
-GITHUB_REPO = normalize_github_repo(_get_secret("GITHUB_REPO", "AriyaMon/NasaSpaceAppsFireLedger"))
+GITHUB_REPO = normalize_github_repo(_get_secret("GITHUB_REPO", "[REDACTED]"))
 
 WORK_DIR = Path("./fireledger_build")
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 DETECTIONS_PARQUET = WORK_DIR / "detections.parquet"
 MONTHLY_PARQUET = WORK_DIR / "harmonized_global_monthly.parquet"
+CELLS_JSON = WORK_DIR / "harmonized_global_cells.json"
 META_JSON = WORK_DIR / "dataset_meta.json"
 
 # Standard regional grid sectors to stream globally within NASA FIRMS API area limits
@@ -360,7 +361,7 @@ def push_to_github_and_release() -> None:
     subprocess.run(["git", "-C", str(repo_dir), "config", "user.email", "fireledger-bot@users.noreply.github.com"], check=True)
     subprocess.run(["git", "-C", str(repo_dir), "config", "user.name", "FireLedger Pipeline"], check=True)
 
-    for fname in (MONTHLY_PARQUET.name, META_JSON.name):
+    for fname in (MONTHLY_PARQUET.name, CELLS_JSON.name, META_JSON.name):
         src = WORK_DIR / fname
         if src.exists():
             (repo_dir / fname).write_bytes(src.read_bytes())
@@ -426,18 +427,57 @@ if __name__ == "__main__":
         )
         harmonized_df, metrics = train_stage1_harmonizer(grouped)
         harmonized_df.to_parquet(MONTHLY_PARQUET, index=False)
+
+        # Export lightweight 0.5 deg global cell summary JSON for instant WebGL 3D Globe rendering
+        df_cells = harmonized_df.copy()
+        df_cells["lat_bin"] = (df_cells["grid_lat"] * 2.0).round() / 2.0
+        df_cells["lon_bin"] = (df_cells["grid_lon"] * 2.0).round() / 2.0
+        cells_agg = (
+            df_cells.groupby(["lat_bin", "lon_bin"], as_index=False)
+            .agg(
+                modis_count=("modis_count", "sum"),
+                viirs_count=("viirs_count", "sum"),
+                landsat_count=("landsat_count", "sum"),
+                harmonized_count=("harmonized_count", "sum"),
+                lo90=("lo90", "sum"),
+                hi90=("hi90", "sum"),
+                mean_frp=("modis_mean_frp", "mean"),
+            )
+            .sort_values("harmonized_count", ascending=False)
+            .head(3000)
+        )
+        CELLS_JSON.write_text(
+            json.dumps(
+                [
+                    {
+                        "lat": round(float(r["lat_bin"]), 2),
+                        "lon": round(float(r["lon_bin"]), 2),
+                        "modisCount": int(r["modis_count"]),
+                        "viirsCount": int(r["viirs_count"]),
+                        "landsatCount": int(r["landsat_count"]),
+                        "harmonizedCount": int(r["harmonized_count"]),
+                        "lo90": int(r["lo90"]),
+                        "hi90": int(r["hi90"]),
+                        "frpMw": round(float(r["mean_frp"]) * max(1, int(r["harmonized_count"])), 1),
+                    }
+                    for _, r in cells_agg.iterrows()
+                ]
+            )
+        )
+
         META_JSON.write_text(
             json.dumps(
                 {
                     "generated_at": datetime.now(timezone.utc).isoformat(),
                     "detections_rows": int(len(df_all)),
                     "rows": int(len(harmonized_df)),
+                    "globe_cells": int(len(cells_agg)),
                     "metrics": metrics,
                 },
                 indent=2,
             )
         )
-        print(f"[STAGE 1] Saved {MONTHLY_PARQUET} | Metrics: {metrics}")
+        print(f"[STAGE 1] Saved {MONTHLY_PARQUET} + {CELLS_JSON} ({len(cells_agg)} globe cells) | Metrics: {metrics}")
     else:
         META_JSON.write_text(
             json.dumps(

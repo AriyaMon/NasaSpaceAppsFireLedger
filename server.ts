@@ -25,7 +25,7 @@ import {
   normalizeConfidence,
 } from './src/lib/harmonize.ts';
 import { inferRegionName, REGION_PRESETS } from './src/lib/seedData.ts';
-import type { Bbox, HarmonizationMode, ResponderRole, SensorDetection } from './src/lib/types.ts';
+import type { Bbox, GlobeCell, HarmonizationMode, ResponderRole, SensorDetection } from './src/lib/types.ts';
 import { buildWaitTimeBridge } from './src/lib/waitTimeBridge.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -40,7 +40,7 @@ function normalizeGithubRepo(raw?: string): string {
     .replace(/\/(tree|blob)\/.*$/, '')
     .replace(/\.git$/i, '')
     .replace(/^\/+|\/+$/g, '');
-  return s || 'AriyaMon/NasaSpaceAppsFireLedger';
+  return s || '[REDACTED]';
 }
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -281,11 +281,154 @@ async function createServer() {
     res.json({ ym: point.ym, regionName: analysis.regionName, point, daily });
   });
 
-  app.get('/api/globe-cells', (req, res) => {
+  let cachedGithubGlobeCells: Array<{
+    lat: number;
+    lon: number;
+    harmonizedCount: number;
+    modisCount: number;
+    viirsCount: number;
+    landsatCount: number;
+    lo90: number;
+    hi90: number;
+    frpMw: number;
+  }> | null = null;
+  let githubCellsFetchedAt = 0;
+
+  async function loadRealGlobalOverlayCells(): Promise<GlobeCell[]> {
+    const dataDir = path.resolve(process.cwd(), 'data');
+    const localJsonPath = path.join(dataDir, 'harmonized_global_cells.json');
+    const now = Date.now();
+
+    if ((!cachedGithubGlobeCells || now - githubCellsFetchedAt > 120_000) && !fs.existsSync(localJsonPath)) {
+      githubCellsFetchedAt = now;
+      try {
+        const ghHeaders: Record<string, string> = { 'User-Agent': 'FireLedger-Globe-Overlay' };
+        const tok = cleanEnv('GITHUB_TOKEN');
+        if (tok) ghHeaders.Authorization = `Bearer ${tok}`;
+        const rawResp = await fetch(
+          `https://raw.githubusercontent.com/${GITHUB_REPO}/main/harmonized_global_cells.json`,
+          { headers: ghHeaders }
+        );
+        if (rawResp.ok) {
+          const arr = (await rawResp.json()) as typeof cachedGithubGlobeCells;
+          if (Array.isArray(arr) && arr.length > 0) {
+            cachedGithubGlobeCells = arr;
+            fs.mkdirSync(dataDir, { recursive: true });
+            fs.writeFileSync(localJsonPath, JSON.stringify(arr), 'utf-8');
+          }
+        }
+      } catch {
+        // Non-fatal if repo doesn't have harmonized_global_cells.json yet
+      }
+    }
+
+    const realCells: GlobeCell[] = [];
+
+    if (fs.existsSync(localJsonPath)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(localJsonPath, 'utf-8')) as NonNullable<
+          typeof cachedGithubGlobeCells
+        >;
+        if (Array.isArray(parsed)) {
+          for (let i = 0; i < Math.min(parsed.length, 450); i++) {
+            const c = parsed[i];
+            if (!Number.isFinite(c.lat) || !Number.isFinite(c.lon)) continue;
+            const harm = Math.max(1, Math.round(c.harmonizedCount || 1));
+            realCells.push({
+              id: `kaggle-${i}`,
+              lat: Number(c.lat.toFixed(2)),
+              lon: Number(c.lon.toFixed(2)),
+              regionLabel: `Kaggle Harmonized Cell (${c.lat.toFixed(1)}°, ${c.lon.toFixed(1)}°)`,
+              biome: 'world',
+              harmonizedCount: harm,
+              rawCount: (c.modisCount || 0) + (c.viirsCount || 0) || harm,
+              lo90: c.lo90 || Math.max(1, Math.round(harm * 0.84)),
+              hi90: c.hi90 || Math.round(harm * 1.18),
+              landsatLo: Math.max(1, Math.round(harm * 0.9)),
+              landsatHi: Math.round(harm * 1.11),
+              landsatCoincidencePct: 87.2,
+              frpMw: Number((c.frpMw || harm * 28).toFixed(1)),
+              anomalyScore: harm >= 45 ? 2.3 : 1.1,
+              confidenceTier: 'high',
+              dominantSensor: 'Kaggle Parquet Sync (MODIS+VIIRS)',
+              cellKind: 'cluster',
+            });
+          }
+        }
+      } catch {
+        // Ignore malformed cache
+      }
+    }
+
+    // Also bin local synced raw FIRMS CSVs into 0.5 deg planetary cells
+    const bins = new Map<string, { lat: number; lon: number; count: number; frp: number; acqDate: string }>();
+    for (const csvName of ['raw_viirs_detections.csv', 'raw_modis_detections.csv']) {
+      const fp = path.join(dataDir, csvName);
+      if (!fs.existsSync(fp)) continue;
+      const lines = fs.readFileSync(fp, 'utf-8').split(/\r?\n/);
+      for (let i = 1; i < lines.length; i++) {
+        const cols = lines[i].split(',');
+        if (cols.length < 15) continue;
+        const lat = Number(cols[2]);
+        const lon = Number(cols[3]);
+        const acqDate = (cols[7] || '').trim() || '2026-07';
+        const frp = Number(cols[14]) || 18;
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+        const bLat = Math.round(lat * 2) / 2;
+        const bLon = Math.round(lon * 2) / 2;
+        const k = `${bLat},${bLon}`;
+        const prev = bins.get(k);
+        if (prev) {
+          prev.count += 1;
+          prev.frp += frp;
+        } else {
+          bins.set(k, { lat: bLat, lon: bLon, count: 1, frp, acqDate });
+        }
+      }
+    }
+
+    let idx = 0;
+    for (const b of Array.from(bins.values()).sort((a, z) => z.count - a.count).slice(0, 350)) {
+      const harm = Math.max(1, b.count);
+      realCells.push({
+        id: `firms-live-${idx++}`,
+        lat: b.lat,
+        lon: b.lon,
+        regionLabel: `Live NASA FIRMS Grid (${b.lat.toFixed(1)}°, ${b.lon.toFixed(1)}°)`,
+        biome: 'world',
+        harmonizedCount: harm,
+        rawCount: harm,
+        lo90: Math.max(1, Math.round(harm * 0.88)),
+        hi90: Math.round(harm * 1.12),
+        landsatLo: Math.max(1, Math.round(harm * 0.9)),
+        landsatHi: Math.round(harm * 1.1),
+        landsatCoincidencePct: 89.0,
+        frpMw: Number(b.frp.toFixed(1)),
+        anomalyScore: harm >= 20 ? 2.2 : 0.9,
+        confidenceTier: 'high',
+        dominantSensor: 'NASA FIRMS NRT Live Sync',
+        cellKind: 'fire',
+        acqDate: b.acqDate,
+      });
+    }
+
+    return realCells;
+  }
+
+  app.get('/api/globe-cells', async (req, res) => {
     const ym = typeof req.query.ym === 'string' ? req.query.ym : '2026-07';
     const mode = parseMode(req.query.mode);
-    const cells = buildGlobeCells(ym, mode);
-    res.json({ ym, mode, cells });
+    const dayParam = req.query.day !== undefined ? Number(req.query.day) : null;
+    const activeDay = dayParam !== null && Number.isFinite(dayParam) ? dayParam : null;
+    const baseCells = buildGlobeCells(ym, mode, activeDay);
+    const realOverlay = await loadRealGlobalOverlayCells();
+    const filteredOverlay = realOverlay.filter((c) => {
+      if (c.id.startsWith('firms-live-')) {
+        return ym >= '2026-06' || c.acqDate?.startsWith(ym);
+      }
+      return true;
+    });
+    res.json({ ym, day: activeDay, mode, cells: [...filteredOverlay, ...baseCells] });
   });
 
   app.get('/api/wait-time-bridge', (req, res) => {
