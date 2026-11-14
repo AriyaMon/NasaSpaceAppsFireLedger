@@ -1,0 +1,12 @@
+{
+  "generated_at": "2026-11-14T19:31:24.152686+00:00",
+  "detections_rows": 1532004,
+  "rows": 35451,
+  "metrics": {
+    "r2": 0.5575,
+    "mae": 10.16,
+    "conformal_q90_log": 1.4123,
+    "coverage90_pct": 90.0,
+    "overlap_rows": 33826
+  }
+}
