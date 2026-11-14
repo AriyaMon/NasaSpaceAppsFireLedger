@@ -6,36 +6,50 @@ Run this inside a Kaggle Notebook with GPU T4 x2 or P100 (16 GB VRAM).
 What this script does:
 1. Generates grounded instruction/briefing training pairs across all 5 responder roles:
    - firefighting, police, ambulance, scientist, land_manager
-2. Fine-tunes `mistralai/Mistral-7B-Instruct-v0.3` in 4-bit QLoRA using PEFT + TRL SFTTrainer.
+2. Fine-tunes `mistralai/Mistral-7B-Instruct-v0.3` in 4-bit QLoRA using PEFT + Transformers Trainer.
 3. Runs a continuous GitHub Request-Response Polling Worker:
-   - Constantly polls `requests/` in your GitHub repo (`AriyaMon/NasaSpaceAppsFireLedger`)
+   - Constantly polls `requests/` in your GitHub repo (`[REDACTED]`)
    - Detects any `<request_id>.json` that does NOT yet have a matching `responses/<request_id>.json`
    - Generates a role-specific briefing using your fine-tuned Mistral 7B QLoRA model
    - Verifies all numbers against the request's Fact Ledger to prevent hallucinations
    - Commits the verified answer to `responses/<request_id>.json` on GitHub automatically.
 4. Optionally exposes a live FastAPI + pyngrok `/brief` server if NGROK_TOKEN is provided.
 
-Dependencies in Kaggle cell:
-  !pip install -q -U transformers peft trl bitsandbytes accelerate datasets requests fastapi uvicorn pyngrok
+Dependencies in Kaggle cell (auto-installed if missing):
+  peft, bitsandbytes, accelerate, transformers, datasets, requests
 """
 
 import base64
+import importlib.util
 import json
 import os
 import random
 import re
+import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+for _pkg in ("peft", "bitsandbytes", "accelerate"):
+    if importlib.util.find_spec(_pkg) is None:
+        print(f"[SETUP] Installing missing package {_pkg}...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "-U", _pkg])
+
 import requests
 import torch
 from datasets import Dataset
-from peft import LoraConfig, PeftModel, prepare_model_for_kbit_training
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, TrainingArguments
-from trl import SFTTrainer
+from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    DataCollatorForLanguageModeling,
+    Trainer,
+    TrainingArguments,
+)
 
 def _clean_secret(val: Optional[str]) -> Optional[str]:
     cleaned = (val or "").strip()
@@ -61,7 +75,7 @@ def normalize_github_repo(raw: Optional[str]) -> str:
     s = re.sub(r"^https?://github\.com/", "", s, flags=re.IGNORECASE)
     s = re.sub(r"/(tree|blob)/.*$", "", s)
     s = re.sub(r"\.git$", "", s, flags=re.IGNORECASE)
-    return s.strip("/") or "AriyaMon/NasaSpaceAppsFireLedger"
+    return s.strip("/") or "[REDACTED]"
 
 
 HF_TOKEN = _get_secret("HF_TOKEN")
@@ -71,7 +85,7 @@ BASE_MODEL = os.environ.get(
 ).strip()
 OUTPUT_DIR = Path("./fireledger-mistral-7b-qlora")
 GITHUB_TOKEN = _get_secret("GITHUB_TOKEN") or ""
-GITHUB_REPO = normalize_github_repo(_get_secret("GITHUB_REPO") or "AriyaMon/NasaSpaceAppsFireLedger")
+GITHUB_REPO = normalize_github_repo(_get_secret("GITHUB_REPO") or "[REDACTED]")
 POLL_INTERVAL_SECONDS = float(os.environ.get("POLL_INTERVAL_SECONDS", "8"))
 
 ROLES = {
@@ -206,6 +220,11 @@ def train_qlora() -> None:
         print(f"[TRAIN] Existing LoRA adapters found at {OUTPUT_DIR}; skipping re-train.")
         return
 
+    if hasattr(torch.autograd, "graph") and hasattr(
+        torch.autograd.graph, "set_warn_on_accumulate_grad_stream_mismatch"
+    ):
+        torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
+
     print(f"[TRAIN] Loading {BASE_MODEL} in 4-bit QLoRA...")
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -224,7 +243,12 @@ def train_qlora() -> None:
         device_map="auto",
         token=HF_TOKEN,
     )
-    model = prepare_model_for_kbit_training(model)
+    model.config.use_cache = False
+    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=False)
+    try:
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    except TypeError:
+        model.gradient_checkpointing_enable()
 
     lora_config = LoraConfig(
         r=16,
@@ -234,31 +258,48 @@ def train_qlora() -> None:
         bias="none",
         task_type="CAUSAL_LM",
     )
+    model = get_peft_model(model, lora_config)
+    model.print_trainable_parameters()
 
-    dataset = Dataset.from_list(synthesize_grounded_training_examples(600))
-    args = TrainingArguments(
-        output_dir=str(OUTPUT_DIR),
-        per_device_train_batch_size=2,
-        gradient_accumulation_steps=4,
-        learning_rate=2e-4,
-        num_train_epochs=1,
-        logging_steps=20,
-        save_strategy="epoch",
-        fp16=True,
-        report_to="none",
+    raw_dataset = Dataset.from_list(synthesize_grounded_training_examples(600))
+    tokenized_dataset = raw_dataset.map(
+        lambda batch: tokenizer(batch["text"], truncation=True, max_length=768),
+        batched=True,
+        remove_columns=["text"],
     )
+    collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
-    trainer = SFTTrainer(
+    ta_kwargs: Dict[str, Any] = {
+        "output_dir": str(OUTPUT_DIR),
+        "per_device_train_batch_size": 2,
+        "gradient_accumulation_steps": 4,
+        "learning_rate": 2e-4,
+        "num_train_epochs": 1,
+        "logging_steps": 20,
+        "save_strategy": "epoch",
+        "fp16": torch.cuda.is_available(),
+        "gradient_checkpointing": True,
+        "gradient_checkpointing_kwargs": {"use_reentrant": False},
+        "max_grad_norm": 0.3,
+        "optim": "paged_adamw_8bit",
+        "report_to": "none",
+        "remove_unused_columns": False,
+    }
+    try:
+        args = TrainingArguments(**ta_kwargs)
+    except TypeError:
+        ta_kwargs.pop("gradient_checkpointing_kwargs", None)
+        ta_kwargs["optim"] = "adamw_torch"
+        args = TrainingArguments(**ta_kwargs)
+
+    trainer = Trainer(
         model=model,
-        train_dataset=dataset,
-        peft_config=lora_config,
-        dataset_text_field="text",
-        max_seq_length=768,
-        tokenizer=tokenizer,
         args=args,
+        train_dataset=tokenized_dataset,
+        data_collator=collator,
     )
     trainer.train()
-    trainer.model.save_pretrained(str(OUTPUT_DIR))
+    model.save_pretrained(str(OUTPUT_DIR))
     tokenizer.save_pretrained(str(OUTPUT_DIR))
     print(f"[SAVED] Fine-tuned Mistral 7B LoRA adapters at {OUTPUT_DIR}")
 

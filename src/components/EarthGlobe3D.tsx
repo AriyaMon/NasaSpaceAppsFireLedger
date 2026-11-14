@@ -19,6 +19,7 @@ interface EarthGlobe3DProps {
   onSelectCell: (cell: GlobeCell) => void;
   perimeterGeoJson?: GeoJsonFeatureCollection | null;
   activeYm: string;
+  activeDay?: number | null;
   regionName: string;
 }
 
@@ -30,6 +31,7 @@ export const EarthGlobe3D: React.FC<EarthGlobe3DProps> = ({
   onSelectCell,
   perimeterGeoJson,
   activeYm,
+  activeDay,
   regionName,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -49,30 +51,46 @@ export const EarthGlobe3D: React.FC<EarthGlobe3DProps> = ({
 
   const buildFireGeoJson = (list: GlobeCell[], activeId: string | null) => ({
     type: 'FeatureCollection' as const,
-    features: list.map((c) => ({
-      type: 'Feature' as const,
-      properties: {
-        id: c.id,
-        regionLabel: c.regionLabel,
-        harmonizedCount: c.harmonizedCount,
-        lo90: c.lo90,
-        hi90: c.hi90,
-        landsatLo: c.landsatLo,
-        landsatHi: c.landsatHi,
-        landsatCoincidencePct: c.landsatCoincidencePct,
-        frpMw: c.frpMw,
-        anomalyScore: c.anomalyScore,
-        isSelected: c.id === activeId ? 1 : 0,
-        radiusCore: Math.max(5, Math.min(18, 4 + Math.sqrt(c.harmonizedCount) * 0.25)),
-        radiusCi: Math.max(11, Math.min(34, 8 + Math.sqrt(c.landsatHi) * 0.42)),
-        colorHex:
-          c.anomalyScore >= 2.0 ? '#ef4444' : c.confidenceTier === 'high' ? '#f59e0b' : '#38bdf8',
-      },
-      geometry: {
-        type: 'Point' as const,
-        coordinates: [c.lon, c.lat],
-      },
-    })),
+    features: list.map((c) => {
+      const isCluster = c.cellKind !== 'fire';
+      const coreR = isCluster
+        ? Math.max(3.6, Math.min(11.5, 3.0 + Math.sqrt(c.harmonizedCount) * 0.13))
+        : Math.max(2.1, Math.min(5.2, 1.9 + Math.sqrt(c.frpMw) * 0.16));
+      return {
+        type: 'Feature' as const,
+        properties: {
+          id: c.id,
+          cellKind: isCluster ? 'cluster' : 'fire',
+          regionLabel: c.regionLabel,
+          harmonizedCount: c.harmonizedCount,
+          lo90: c.lo90,
+          hi90: c.hi90,
+          landsatLo: c.landsatLo,
+          landsatHi: c.landsatHi,
+          landsatCoincidencePct: c.landsatCoincidencePct,
+          frpMw: c.frpMw,
+          anomalyScore: c.anomalyScore,
+          dominantSensor: c.dominantSensor,
+          acqDate: c.acqDate ?? activeYm,
+          isSelected: c.id === activeId ? 1 : 0,
+          radiusCore: coreR,
+          radiusGlow: coreR * 2.2,
+          radiusCi: Math.max(8, Math.min(22, 6.2 + Math.sqrt(c.landsatHi) * 0.22)),
+          colorHex:
+            c.anomalyScore >= 2.0
+              ? '#ef4444'
+              : c.anomalyScore >= 1.0 || c.confidenceTier === 'high'
+                ? isCluster
+                  ? '#f59e0b'
+                  : '#fb923c'
+                : '#38bdf8',
+        },
+        geometry: {
+          type: 'Point' as const,
+          coordinates: [c.lon, c.lat],
+        },
+      };
+    }),
   });
 
   const buildBboxGeoJson = (b: Bbox) => {
@@ -112,8 +130,8 @@ export const EarthGlobe3D: React.FC<EarthGlobe3DProps> = ({
       map = new MapLibreMap({
         container,
         center: [flyTarget?.lon ?? -67.5, flyTarget?.lat ?? -29.16],
-        zoom: 2.15,
-        pitch: 18,
+        zoom: 1.7,
+        pitch: 14,
         bearing: 0,
         attributionControl: { compact: true },
         style: {
@@ -269,22 +287,37 @@ export const EarthGlobe3D: React.FC<EarthGlobe3DProps> = ({
         data: buildFireGeoJson(cellsRef.current, selectedCellId),
       });
 
-      // Outer Landsat + Conformal Confidence Ring
+      // Outer Landsat + Conformal Confidence Ring (Cluster Anchors only for crisp visibility)
       map.addLayer({
         id: 'fire-cells-ci-halo',
         type: 'circle',
         source: 'fire-cells',
+        filter: ['==', ['get', 'cellKind'], 'cluster'],
         paint: {
           'circle-radius': ['get', 'radiusCi'],
           'circle-color': '#38bdf8',
-          'circle-opacity': 0.16,
+          'circle-opacity': 0.14,
           'circle-stroke-color': '#38bdf8',
           'circle-stroke-width': 1,
-          'circle-stroke-opacity': 0.55,
+          'circle-stroke-opacity': 0.5,
         },
       });
 
-      // Inner Thermal Hotspot Core
+      // Soft Thermal Ember Glow around individual active fires
+      map.addLayer({
+        id: 'fire-cells-thermal-glow',
+        type: 'circle',
+        source: 'fire-cells',
+        filter: ['==', ['get', 'cellKind'], 'fire'],
+        paint: {
+          'circle-radius': ['get', 'radiusGlow'],
+          'circle-color': ['get', 'colorHex'],
+          'circle-opacity': 0.26,
+          'circle-blur': 0.75,
+        },
+      });
+
+      // Inner Thermal Hotspot Core (all simulated + observed fires & cluster cores)
       map.addLayer({
         id: 'fire-cells-core',
         type: 'circle',
@@ -292,9 +325,17 @@ export const EarthGlobe3D: React.FC<EarthGlobe3DProps> = ({
         paint: {
           'circle-radius': ['get', 'radiusCore'],
           'circle-color': ['get', 'colorHex'],
-          'circle-opacity': 0.92,
+          'circle-opacity': ['case', ['==', ['get', 'cellKind'], 'cluster'], 0.92, 0.88],
           'circle-stroke-color': '#ffffff',
-          'circle-stroke-width': ['case', ['==', ['get', 'isSelected'], 1], 2.2, 0.8],
+          'circle-stroke-width': [
+            'case',
+            ['==', ['get', 'isSelected'], 1],
+            2.2,
+            ['==', ['get', 'cellKind'], 'cluster'],
+            0.85,
+            0.25,
+          ],
+          'circle-stroke-opacity': ['case', ['==', ['get', 'cellKind'], 'cluster'], 0.9, 0.45],
         },
       });
 
@@ -317,12 +358,14 @@ export const EarthGlobe3D: React.FC<EarthGlobe3DProps> = ({
         const coords = (feat.geometry as { type: string; coordinates: [number, number] })
           .coordinates;
         popupRef.current?.remove();
-        popupRef.current = new Popup({ closeButton: true, maxWidth: '260px' })
+        popupRef.current = new Popup({ closeButton: true, maxWidth: '280px' })
           .setLngLat(coords)
           .setHTML(
             `<div style="font-size:12px;line-height:1.45;">
               <div style="font-weight:600;color:#f3f1ec;margin-bottom:4px;">${props.regionLabel}</div>
               <div style="font-family:JetBrains Mono,monospace;font-size:11px;color:#d1d5db;">
+                Date: <span style="color:#f3f1ec;">${props.acqDate || activeYm}</span><br/>
+                Sensor: <span style="color:#93c5fd;">${props.dominantSensor || 'VIIRS 375m'}</span><br/>
                 VIIRS-Eq: <strong style="color:#fbbf24;">${Number(props.harmonizedCount).toLocaleString()}</strong><br/>
                 90% CI: ${Number(props.lo90).toLocaleString()}–${Number(props.hi90).toLocaleString()}<br/>
                 Landsat CI: <span style="color:#38bdf8;">${Number(props.landsatLo).toLocaleString()}–${Number(props.landsatHi).toLocaleString()}</span><br/>
@@ -424,12 +467,13 @@ export const EarthGlobe3D: React.FC<EarthGlobe3DProps> = ({
       )}
 
       {/* Subtle Floating Cartographic Controls (Top-Left) */}
-      <div className="pointer-events-none absolute left-3.5 top-3.5 z-10 flex max-w-[54%] flex-col gap-0.5 rounded border border-white/10 bg-[#090a0d]/85 px-3 py-2 backdrop-blur-sm">
+      <div className="pointer-events-none absolute left-3.5 top-3.5 z-10 flex max-w-[58%] flex-col gap-0.5 rounded border border-white/10 bg-[#090a0d]/85 px-3 py-2 backdrop-blur-sm">
         <div className="truncate font-editorial text-sm font-medium text-[#f3f1ec]">
           {regionName}
         </div>
         <div className="truncate font-mono text-[10px] text-[#a19d94]">
-          {activeYm} · Cyan rings = Landsat 8/9 &amp; Conformal CI
+          {activeDay ? `${activeYm}-${String(activeDay).padStart(2, '0')}` : activeYm} ·{' '}
+          {cells.filter((c) => c.cellKind === 'fire').length.toLocaleString()} active fires plotted · Cyan rings = Landsat 8/9 CI
         </div>
       </div>
 

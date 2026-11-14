@@ -1,9 +1,9 @@
 {
-  "updatedAtIso": "2026-11-14T19:27:12.389Z",
-  "repo": "AriyaMon/NasaSpaceAppsFireLedger",
-  "rawModisRowsSynced": 4000,
-  "rawViirsRowsSynced": 6000,
-  "rawLandsatNrtRowsSynced": 1894,
+  "updatedAtIso": "2026-11-14T21:36:56.581Z",
+  "repo": "HackathonTeam12341/NasaSpaceAppsFireLedger",
+  "rawModisRowsSynced": 0,
+  "rawViirsRowsSynced": 0,
+  "rawLandsatNrtRowsSynced": 0,
   "harmonizedGlobalMonths": 312,
   "pipelineVersion": "FireLedger-2026.1",
   "sensorsIncluded": [

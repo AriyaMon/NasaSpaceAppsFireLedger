@@ -170,6 +170,9 @@ export interface GlobeCell {
   anomalyScore: number;
   confidenceTier: 'high' | 'medium' | 'low';
   dominantSensor: string;
+  cellKind?: 'cluster' | 'fire';
+  acqDate?: string;
+  windBearingDeg?: number;
 }
 
 export interface SuperResCell {

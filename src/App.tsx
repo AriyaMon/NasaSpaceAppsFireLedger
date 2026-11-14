@@ -2,11 +2,32 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { StartupSyncStatus } from '../scripts/syncGithubRawDb.ts';
 import { BurningCalendar } from './components/BurningCalendar.tsx';
 import { EarthGlobe3D } from './components/EarthGlobe3D.tsx';
+import {
+  FireTimelineBar,
+  type TimelineGranularity,
+} from './components/FireTimelineBar.tsx';
 import { HarmonizationChart } from './components/HarmonizationChart.tsx';
 import { PipelineMethodologyPanel } from './components/PipelineMethodologyPanel.tsx';
 import { RegionSelector2D } from './components/RegionSelector2D.tsx';
 import { ResponderBriefingPanel } from './components/ResponderBriefingPanel.tsx';
 import { WaitTimeBridgeView } from './components/WaitTimeBridgeView.tsx';
+import {
+  DEFAULT_GITHUB_REPO,
+  downloadCsvExport,
+  downloadGeoJsonExport,
+  fetchAnalyze,
+  fetchDailySlice,
+  fetchGlobeCells,
+  fetchLandsatVerify,
+  fetchMeta,
+  fetchResponderBrief,
+  fetchStartupSyncStatus,
+  fetchWaitTimeBridge,
+  pollGithubInferenceStatus,
+  queueGithubInference,
+  triggerLiveFirms,
+  triggerStartupSync,
+} from './lib/apiClient.ts';
 import { REGION_PRESETS } from './lib/seedData.ts';
 import type {
   AnalyzeResponse,
@@ -23,17 +44,15 @@ import type {
 
 type WorkspaceTab = 'overview' | 'calendar' | 'bridge' | 'pipeline';
 
-function buildQuery(params: Record<string, string | number>): string {
-  const qs = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) {
-    qs.set(k, String(v));
-  }
-  return qs.toString();
+function getDaysInMonth(ym: string): number {
+  const [yrStr, moStr] = ym.split('-');
+  const yr = Number(yrStr) || 2026;
+  const mo = Number(moStr) || 7;
+  return new Date(yr, mo, 0).getDate();
 }
 
 export default function App() {
   const initialPreset = REGION_PRESETS[0];
-
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('overview');
   const [spatialSubMode, setSpatialSubMode] = useState<'3d' | '2d'>('3d');
   const [selectedPresetId, setSelectedPresetId] = useState<string>(initialPreset.id);
@@ -43,6 +62,11 @@ export default function App() {
   );
   const [mode, setMode] = useState<HarmonizationMode>('harmonized');
   const [selectedYm, setSelectedYm] = useState<string>(initialPreset.highlightYm);
+  const [timelineGranularity, setTimelineGranularity] =
+    useState<TimelineGranularity>('month');
+  const [selectedDay, setSelectedDay] = useState<number>(28);
+  const [isSimPlaying, setIsSimPlaying] = useState<boolean>(false);
+  const [simSpeed, setSimSpeed] = useState<1 | 2 | 4>(1);
   const [colorRamp, setColorRamp] = useState<ColorRamp>('inferno');
   const [role, setRole] = useState<ResponderRole>('firefighting');
   const [selectedCellId, setSelectedCellId] = useState<string | null>(null);
@@ -62,10 +86,10 @@ export default function App() {
   const [fetchingFirms, setFetchingFirms] = useState(false);
   const [triggeringSync, setTriggeringSync] = useState(false);
   const [queuingRequest, setQueuingRequest] = useState(false);
-
   const [firmsBanner, setFirmsBanner] = useState<string | null>(null);
   const [githubQueueMessage, setGithubQueueMessage] = useState<string | null>(null);
   const [pendingRequestId, setPendingRequestId] = useState<string | null>(null);
+
   const [metaInfo, setMetaInfo] = useState<{
     firmsConfigured: boolean;
     localLlmConfigured: boolean;
@@ -73,26 +97,30 @@ export default function App() {
   }>({
     firmsConfigured: false,
     localLlmConfigured: false,
-    githubRepo: 'AriyaMon/NasaSpaceAppsFireLedger',
+    githubRepo: DEFAULT_GITHUB_REPO,
   });
 
+  const daysInMonth = useMemo(() => getDaysInMonth(selectedYm), [selectedYm]);
+
   useEffect(() => {
-    fetch('/api/meta')
-      .then((r) => r.json())
+    setSelectedDay((d) => Math.max(1, Math.min(daysInMonth, d)));
+  }, [daysInMonth]);
+
+  useEffect(() => {
+    fetchMeta()
       .then((d) => {
         setMetaInfo({
           firmsConfigured: Boolean(d.firmsConfigured),
           localLlmConfigured: Boolean(d.localLlmConfigured),
-          githubRepo: d.githubRepo || 'AriyaMon/NasaSpaceAppsFireLedger',
+          githubRepo: d.githubRepo || DEFAULT_GITHUB_REPO,
         });
-        if (d.startupSync) setStartupSync(d.startupSync as StartupSyncStatus);
+        if (d.startupSync) setStartupSync(d.startupSync);
       })
       .catch(() => {});
 
     const timer = setTimeout(() => {
-      fetch('/api/startup-sync-status')
-        .then((r) => r.json())
-        .then((s: StartupSyncStatus) => setStartupSync(s))
+      fetchStartupSyncStatus()
+        .then((s) => setStartupSync(s))
         .catch(() => {});
     }, 3500);
     return () => clearTimeout(timer);
@@ -101,16 +129,8 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     setLoadingAnalysis(true);
-    const qs = buildQuery({
-      west: bbox.west,
-      south: bbox.south,
-      east: bbox.east,
-      north: bbox.north,
-      mode,
-    });
-    fetch(`/api/analyze?${qs}`)
-      .then((r) => r.json())
-      .then((data: AnalyzeResponse) => {
+    fetchAnalyze(bbox, mode)
+      .then((data) => {
         if (cancelled) return;
         setAnalysis(data);
         if (!data.series.some((s) => s.ym === selectedYm)) {
@@ -127,9 +147,8 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    const qs = buildQuery({ ym: selectedYm, mode });
-    fetch(`/api/globe-cells?${qs}`)
-      .then((r) => r.json())
+    const dayParam = timelineGranularity === 'day' ? selectedDay : null;
+    fetchGlobeCells(selectedYm, mode, dayParam)
       .then((d) => {
         if (!cancelled && Array.isArray(d.cells)) setGlobeCells(d.cells);
       })
@@ -137,20 +156,45 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [selectedYm, mode]);
+  }, [selectedYm, mode, timelineGranularity, selectedDay]);
+
+  useEffect(() => {
+    if (!isSimPlaying || !analysis || analysis.series.length === 0) return;
+
+    const intervalMs =
+      timelineGranularity === 'day'
+        ? Math.round(650 / simSpeed)
+        : Math.round(900 / simSpeed);
+
+    const timer = setInterval(() => {
+      if (timelineGranularity === 'month') {
+        setSelectedYm((curr) => {
+          const idx = analysis.series.findIndex((s) => s.ym === curr);
+          const nextIdx = idx < 0 || idx + 1 >= analysis.series.length ? 0 : idx + 1;
+          return analysis.series[nextIdx]?.ym ?? curr;
+        });
+      } else {
+        setSelectedDay((currDay) => {
+          if (currDay + 1 <= daysInMonth) {
+            return currDay + 1;
+          }
+          const idx = analysis.series.findIndex((s) => s.ym === selectedYm);
+          const nextIdx = idx < 0 || idx + 1 >= analysis.series.length ? 0 : idx + 1;
+          const nextYm = analysis.series[nextIdx]?.ym;
+          if (nextYm && nextYm !== selectedYm) {
+            setSelectedYm(nextYm);
+          }
+          return 1;
+        });
+      }
+    }, intervalMs);
+
+    return () => clearInterval(timer);
+  }, [isSimPlaying, timelineGranularity, simSpeed, analysis, daysInMonth, selectedYm]);
 
   useEffect(() => {
     let cancelled = false;
-    const qs = buildQuery({
-      west: bbox.west,
-      south: bbox.south,
-      east: bbox.east,
-      north: bbox.north,
-      ym: selectedYm,
-      mode,
-    });
-    fetch(`/api/daily-slice?${qs}`)
-      .then((r) => r.json())
+    fetchDailySlice(bbox, selectedYm, mode)
       .then((d) => {
         if (!cancelled && Array.isArray(d.daily)) setDailySlice(d.daily);
       })
@@ -163,16 +207,8 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     setLoadingBridge(true);
-    const qs = buildQuery({
-      west: bbox.west,
-      south: bbox.south,
-      east: bbox.east,
-      north: bbox.north,
-      ym: selectedYm,
-    });
-    fetch(`/api/wait-time-bridge?${qs}`)
-      .then((r) => r.json())
-      .then((d: WaitTimeBridgeResult) => {
+    fetchWaitTimeBridge(bbox, selectedYm)
+      .then((d) => {
         if (!cancelled) setBridge(d);
       })
       .finally(() => {
@@ -185,16 +221,8 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    const qs = buildQuery({
-      west: bbox.west,
-      south: bbox.south,
-      east: bbox.east,
-      north: bbox.north,
-      ym: selectedYm,
-    });
-    fetch(`/api/landsat-verify?${qs}`)
-      .then((r) => r.json())
-      .then((d: LandsatVerificationResult) => {
+    fetchLandsatVerify(bbox, selectedYm)
+      .then((d) => {
         if (!cancelled) setLandsat(d);
       })
       .catch(() => {});
@@ -206,18 +234,8 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     setLoadingBrief(true);
-    fetch('/api/brief', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...bbox,
-        ym: selectedYm,
-        mode,
-        role,
-      }),
-    })
-      .then((r) => r.json())
-      .then((d: ResponderBriefResult) => {
+    fetchResponderBrief(bbox, selectedYm, mode, role)
+      .then((d) => {
         if (!cancelled) setBrief(d);
       })
       .finally(() => {
@@ -237,6 +255,22 @@ export default function App() {
     setSelectedYm(found.highlightYm);
     setSelectedCellId(null);
   }, []);
+
+  const handleJumpLandmark = useCallback(
+    (ym: string, presetId?: string) => {
+      if (presetId) {
+        const found = REGION_PRESETS.find((p) => p.id === presetId);
+        if (found) {
+          setSelectedPresetId(found.id);
+          setBbox(found.bbox);
+          setFlyTarget(found.center);
+          setSelectedCellId(null);
+        }
+      }
+      setSelectedYm(ym);
+    },
+    []
+  );
 
   const handleApplyCustomBbox = useCallback((next: Bbox) => {
     setSelectedPresetId('custom');
@@ -259,42 +293,23 @@ export default function App() {
   }, []);
 
   const handleExportCsv = () => {
-    const qs = buildQuery({
-      west: bbox.west,
-      south: bbox.south,
-      east: bbox.east,
-      north: bbox.north,
-      mode,
-    });
-    window.location.href = `/api/hotspots.csv?${qs}`;
+    void downloadCsvExport(bbox, mode);
   };
 
   const handleDownloadGeoJson = () => {
-    const qs = buildQuery({
-      west: bbox.west,
-      south: bbox.south,
-      east: bbox.east,
-      north: bbox.north,
-      ym: selectedYm,
-    });
-    window.location.href = `/api/perimeter.geojson?${qs}`;
+    void downloadGeoJsonExport(bbox, selectedYm);
   };
 
   const handleFetchLiveFirms = async () => {
     setFetchingFirms(true);
     setFirmsBanner(null);
     try {
-      const res = await fetch('/api/fetch-firms', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...bbox, days: 3 }),
-      });
-      const data = await res.json();
-      if (data.liveFetched) {
-        const counts = Object.entries(data.countsBySensor as Record<string, number>)
+      const data = await triggerLiveFirms(bbox, 3);
+      if (data.liveFetched && data.countsBySensor) {
+        const counts = Object.entries(data.countsBySensor)
           .map(([k, v]) => `${k}: ${v}`)
           .join(' · ');
-        setFirmsBanner(`Live NASA FIRMS NRT synced (${data.days}d): ${counts}`);
+        setFirmsBanner(`Live NASA FIRMS NRT synced (${data.days ?? 3}d): ${counts}`);
       } else {
         setFirmsBanner(data.message || 'Live FIRMS key not configured; using baseline ledger.');
       }
@@ -308,16 +323,7 @@ export default function App() {
   const handleRunLiveLandsatCheck = async () => {
     setLoadingLandsat(true);
     try {
-      const qs = buildQuery({
-        west: bbox.west,
-        south: bbox.south,
-        east: bbox.east,
-        north: bbox.north,
-        ym: selectedYm,
-        live: 1,
-      });
-      const res = await fetch(`/api/landsat-verify?${qs}`);
-      const d = (await res.json()) as LandsatVerificationResult;
+      const d = await fetchLandsatVerify(bbox, selectedYm, true);
       setLandsat(d);
     } finally {
       setLoadingLandsat(false);
@@ -327,8 +333,7 @@ export default function App() {
   const handleTriggerStartupSync = async () => {
     setTriggeringSync(true);
     try {
-      const res = await fetch('/api/trigger-startup-sync', { method: 'POST' });
-      const d = (await res.json()) as StartupSyncStatus;
+      const d = await triggerStartupSync();
       setStartupSync(d);
     } finally {
       setTriggeringSync(false);
@@ -339,13 +344,8 @@ export default function App() {
     setQueuingRequest(true);
     setGithubQueueMessage(null);
     try {
-      const res = await fetch('/api/github-inference/request', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...bbox, ym: selectedYm, mode, role }),
-      });
-      const d = await res.json();
-      if (d.ok) {
+      const d = await queueGithubInference(bbox, selectedYm, mode, role);
+      if (d.ok && d.requestId) {
         setPendingRequestId(d.requestId);
         setGithubQueueMessage(
           `Queued in ${d.sqlitePath ?? 'database/inference_queue.sqlite'} as status="unanswered" (${d.requestId}). Waiting for Kaggle Mistral 7B...`
@@ -364,22 +364,19 @@ export default function App() {
     if (!pendingRequestId) return;
     const poll = setInterval(async () => {
       try {
-        const res = await fetch(
-          `/api/github-inference/status?requestId=${encodeURIComponent(pendingRequestId)}`
-        );
-        const d = await res.json();
-        if (d.answered && d.answer?.text) {
+        const d = await pollGithubInferenceStatus(pendingRequestId);
+        if (d?.answered && d.answer?.text) {
           setBrief((prev) =>
             prev
               ? {
                   ...prev,
-                  text: d.answer.text,
+                  text: d.answer?.text ?? prev.text,
                   source: 'local_mistral_7b',
                   modelName: 'Mistral 7B QLoRA (Kaggle · answered ✓)',
-                  verifiedNumbers: Array.isArray(d.answer.verifiedNumbers)
+                  verifiedNumbers: Array.isArray(d.answer?.verifiedNumbers)
                     ? d.answer.verifiedNumbers
                     : prev.verifiedNumbers,
-                  rejectedNumbers: Array.isArray(d.answer.rejectedNumbers)
+                  rejectedNumbers: Array.isArray(d.answer?.rejectedNumbers)
                     ? d.answer.rejectedNumbers
                     : [],
                 }
@@ -408,8 +405,8 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#090a0d] text-[#f3f1ec]">
       {/* Top Bar Contract: 3 zones (Wordmark | 4 Nav Links | 1 Primary Action) */}
-      <header className="sticky top-0 z-30 border-b border-white/[0.08] bg-[#090a0d]/95 px-5 backdrop-blur sm:px-8">
-        <div className="mx-auto flex h-15 max-w-[1440px] items-center justify-between gap-8">
+      <header className="sticky top-0 z-30 border-b border-white/[0.08] bg-[#090a0d]/95 px-4 backdrop-blur sm:px-8">
+        <div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-x-6 gap-y-1 py-2 sm:h-15 sm:flex-nowrap sm:py-0">
           <div className="flex shrink-0 items-baseline gap-3 whitespace-nowrap">
             <span className="font-editorial text-xl font-medium tracking-tight text-[#f3f1ec]">
               FireLedger
@@ -419,7 +416,15 @@ export default function App() {
             </span>
           </div>
 
-          <nav className="flex items-center gap-5 overflow-x-auto sm:gap-7">
+          <button
+            type="button"
+            onClick={handleExportCsv}
+            className="shrink-0 whitespace-nowrap rounded border border-white/20 bg-[#101216] px-3.5 py-1.5 font-mono text-xs font-medium text-[#f3f1ec] transition-colors hover:border-[#e5a93c] sm:order-3"
+          >
+            Export CSV
+          </button>
+
+          <nav className="order-3 flex w-full items-center gap-5 overflow-x-auto border-t border-white/[0.06] pt-1 sm:order-2 sm:w-auto sm:gap-7 sm:border-t-0 sm:pt-0">
             {(
               [
                 ['overview', 'Observatory'],
@@ -434,7 +439,7 @@ export default function App() {
                   key={tabId}
                   type="button"
                   onClick={() => setActiveTab(tabId)}
-                  className={`relative shrink-0 whitespace-nowrap py-4 text-xs font-medium transition-colors ${
+                  className={`relative shrink-0 whitespace-nowrap py-2.5 text-xs font-medium transition-colors sm:py-4 ${
                     active ? 'text-[#f3f1ec]' : 'text-[#a19d94] hover:text-[#f3f1ec]'
                   }`}
                 >
@@ -446,14 +451,6 @@ export default function App() {
               );
             })}
           </nav>
-
-          <button
-            type="button"
-            onClick={handleExportCsv}
-            className="shrink-0 whitespace-nowrap rounded border border-white/20 bg-[#101216] px-3.5 py-1.5 font-mono text-xs font-medium text-[#f3f1ec] transition-colors hover:border-[#e5a93c]"
-          >
-            Export CSV
-          </button>
         </div>
       </header>
 
@@ -545,7 +542,7 @@ export default function App() {
         {/* Flat Hairline-Divided Telemetry Strip */}
         {analysis && activePoint && (
           <section className="grid grid-cols-1 divide-y divide-white/[0.08] border-b border-white/[0.08] pb-5 sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-4">
-            <div className="pr-4 py-1">
+            <div className="py-2.5 sm:py-1 sm:pr-4">
               <div className="text-xs text-[#73706a]">
                 {mode === 'raw' ? 'Raw Detections' : 'Harmonized VIIRS-Equivalent'} ·{' '}
                 <span className="font-mono">{activePoint.ym}</span>
@@ -565,7 +562,7 @@ export default function App() {
               <div className="mt-0.5 truncate text-xs text-[#a19d94]">{analysis.regionName}</div>
             </div>
 
-            <div className="px-4 py-1">
+            <div className="py-2.5 sm:px-4 sm:py-1">
               <div className="text-xs text-sky-300">90% Conformal &amp; Landsat 8/9 CI</div>
               <div className="mt-1 font-mono tabular-nums text-xl font-medium text-[#f3f1ec]">
                 {activePoint.landsatLo.toLocaleString()}–{activePoint.landsatHi.toLocaleString()}
@@ -576,7 +573,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className="px-4 py-1">
+            <div className="py-2.5 sm:px-4 sm:py-1">
               <div className="text-xs text-[#73706a]">26-Year Anomaly Departure</div>
               <div className="mt-1 flex items-baseline gap-2 font-mono tabular-nums">
                 <span
@@ -600,7 +597,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className="pl-4 py-1">
+            <div className="py-2.5 sm:py-1 sm:pl-4">
               <div className="text-xs text-[#73706a]">Multi-Sensor Accounting (2000–2026)</div>
               <div className="mt-1 font-mono tabular-nums text-lg font-medium text-[#f3f1ec]">
                 {analysis.accounting.totalHarmonizedViirsEq.toLocaleString()} VIIRS-Eq
@@ -616,6 +613,26 @@ export default function App() {
         {/* Active View Switcher */}
         {activeTab === 'overview' && (
           <>
+            {analysis && (
+              <FireTimelineBar
+                series={analysis.series}
+                selectedYm={selectedYm}
+                onSelectYm={setSelectedYm}
+                granularity={timelineGranularity}
+                onChangeGranularity={setTimelineGranularity}
+                selectedDay={selectedDay}
+                daysInMonth={daysInMonth}
+                onSelectDay={setSelectedDay}
+                isPlaying={isSimPlaying}
+                onTogglePlay={() => setIsSimPlaying((p) => !p)}
+                speed={simSpeed}
+                onChangeSpeed={setSimSpeed}
+                mode={mode}
+                globeCells={globeCells}
+                onJumpLandmark={handleJumpLandmark}
+              />
+            )}
+
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
               {/* Primary 60%+ Satellite 3D Globe Stage */}
               <div className="flex flex-col gap-3 lg:col-span-7">
@@ -661,6 +678,7 @@ export default function App() {
                       onSelectCell={handleSelectGlobeCell}
                       perimeterGeoJson={bridge?.perimeterGeoJson ?? null}
                       activeYm={selectedYm}
+                      activeDay={timelineGranularity === 'day' ? selectedDay : null}
                       regionName={analysis?.regionName ?? initialPreset.name}
                     />
                   ) : (

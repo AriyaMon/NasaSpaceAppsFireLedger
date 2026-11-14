@@ -85,3 +85,20 @@ test('buildDailySlice, buildGlobeCells, and buildLandsatVerification produce val
   assert.ok(lVerify.geeScript.includes('LANDSAT/LC09/C02/T1_L2'));
   assert.ok(lVerify.confidenceInterval90Ha[0] < lVerify.confidenceInterval90Ha[1]);
 });
+
+test('buildGlobeCells simulates individual fires by month, daily progression, and sensor mode', () => {
+  const harm2023 = buildGlobeCells('2023-06', 'harmonized');
+  const firePoints = harm2023.filter((c) => c.cellKind === 'fire');
+  const clusters = harm2023.filter((c) => c.cellKind === 'cluster');
+  assert.ok(clusters.length >= 100, 'Expected global cluster anchors');
+  assert.ok(firePoints.length >= 200, 'Expected hundreds of simulated individual fires');
+
+  const day1 = buildGlobeCells('2023-06', 'harmonized', 1).filter((c) => c.cellKind === 'fire');
+  const day18 = buildGlobeCells('2023-06', 'harmonized', 18).filter((c) => c.cellKind === 'fire');
+  assert.ok(day1.length > 0 && day18.length > 0);
+  assert.ok(day18.every((c) => c.acqDate === '2023-06-18'));
+
+  const pre2012Raw = buildGlobeCells('2007-09', 'raw').filter((c) => c.cellKind === 'fire');
+  const pre2012Harm = buildGlobeCells('2007-09', 'harmonized').filter((c) => c.cellKind === 'fire');
+  assert.ok(pre2012Harm.length > pre2012Raw.length);
+});
