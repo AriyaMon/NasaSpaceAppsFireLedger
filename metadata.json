@@ -1,6 +1,6 @@
 {
-  "name": "",
-  "description": "",
+  "name": "FireLedger",
+  "description": "Harmonized MODIS, VIIRS & Landsat Wildfire Intelligence — 2000–2026 Burning Activity Calendar, 3D Earth Globe, Optical Wait-Time Bridge, and Role-Specific Responder Briefings.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

@@ -40,7 +40,7 @@ function normalizeGithubRepo(raw?: string): string {
     .replace(/\/(tree|blob)\/.*$/, '')
     .replace(/\.git$/i, '')
     .replace(/^\/+|\/+$/g, '');
-  return s || '[REDACTED]';
+  return s || 'AriyaMon/NasaSpaceAppsFireLedger';
 }
 
 const PORT = Number(process.env.PORT ?? 3000);
