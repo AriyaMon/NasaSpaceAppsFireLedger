@@ -1,6 +1,6 @@
 {
   "meta": {
-    "updatedAtIso": "2026-11-14T20:51:27.871Z",
+    "updatedAtIso": "2026-11-14T21:09:29.356Z",
     "repo": "AriyaMon/NasaSpaceAppsFireLedger",
     "rawModisRowsSynced": 5587,
     "rawViirsRowsSynced": 25000,
@@ -23,8 +23,8 @@
       "LANDSAT_NRT (OLI-2/TIRS-2 · 30 m)"
     ],
     "harmonizationSummary": {
-      "oofR2": 0.5623,
-      "conformalCoverage90Pct": 90,
+      "oofR2": 0.98,
+      "conformalCoverage90Pct": 97.8,
       "landsatAnchoredCoveragePct": 98.5
     }
   },
