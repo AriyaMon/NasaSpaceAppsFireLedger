@@ -6,7 +6,6 @@ import {SATELLITES,loadTles,parseTracks,location,predict,type Track,type Pass} f
 type Props={map:MapLibreMap|null; bbox:Bbox; regionName:string; onRefresh?:()=>Promise<unknown>};
 type State='loading'|'ready'|'stale'|'unavailable'|'overpass'|'checking'|'awaiting-publication'|'updated'|'backend-required';
 const empty={type:'FeatureCollection',features:[]} as const;
-const flags={showSatellites:true,showTracks:true,showSwaths:false};
 const signalColor=(t:Track)=>t.operational?(t.sensor==='VIIRS'?'#63e6fb':'#f0bf69'):'#8b929e';
 function swathRing(lon:number,lat:number,km:number){
   const points:number[][]=[];
@@ -67,9 +66,7 @@ export const SatelliteTracking:React.FC<Props>=({map,bbox,regionName,onRefresh})
     map.addLayer({id:'fireledger-satellite-markers',type:'circle',source:sources[0],paint:{
       'circle-radius':7,'circle-color':['get','color'],'circle-stroke-color':'#04111a','circle-stroke-width':2
     }});
-    map.addLayer({id:'fireledger-satellite-labels',type:'symbol',source:sources[0],layout:{
-      'text-field':['get','name'],'text-size':11,'text-offset':[0,1.7],'text-anchor':'top'
-    },paint:{'text-color':'#e9f8ff','text-halo-color':'#060e1a','text-halo-width':2}});
+    // Name/details are in the panel and click popup. The existing raster style has no glyphs URL.
     const handler=(e:any)=>{
       const props=e.features?.[0]?.properties;
       if(!props)return;
@@ -80,7 +77,7 @@ export const SatelliteTracking:React.FC<Props>=({map,bbox,regionName,onRefresh})
     map.on('click','fireledger-satellite-markers',handler);
     return()=>{
       map.off('click','fireledger-satellite-markers',handler);
-      for(const id of ['fireledger-satellite-labels','fireledger-satellite-markers','fireledger-swath-outline','fireledger-swath-fill','fireledger-orbit-lines'])
+      for(const id of ['fireledger-satellite-markers','fireledger-swath-outline','fireledger-swath-fill','fireledger-orbit-lines'])
         if(map.getLayer(id))map.removeLayer(id);
       for(const id of sources)if(map.getSource(id))map.removeSource(id);
     };
@@ -146,9 +143,8 @@ export const SatelliteTracking:React.FC<Props>=({map,bbox,regionName,onRefresh})
         try{
           const result=await onRefresh();
           if((result as any)?.liveFetched){
-            setLastUpdate(new Date().toISOString());
-            setState('updated');
-            setDetail('FIRMS checked after predicted overpass; published acquisition not confirmed.');
+            setState('awaiting-publication');
+            setDetail('FIRMS API checked; data publication is not confirmed, and historical analytics have not been recomputed.');
           }else{setState('backend-required');setDetail('Static hosting or FIRMS API not configured.');}
         }catch{setState('awaiting-publication');}
         if(polls.current>=18&&pollTimer.current){clearInterval(pollTimer.current);pollTimer.current=null;}
@@ -175,7 +171,7 @@ export const SatelliteTracking:React.FC<Props>=({map,bbox,regionName,onRefresh})
     </div>
     <div className="mt-1 grid grid-cols-2 gap-1">{SATELLITES.map(s=><label key={s.id} className="truncate"><input type="checkbox" checked={visible[s.id]!==false} onChange={e=>setVisible(v=>({...v,[s.id]:e.target.checked}))}/> {s.name}{!s.operational?' (inactive)':''}</label>)}</div>
     <details className="mt-2"><summary className="cursor-pointer">Upcoming overpasses ({upcoming.length})</summary>{upcoming.map(p=><div key={p.id+p.start}>{p.name}: {new Date(p.start).toLocaleString()}</div>)}</details>
-    <div className="mt-1 text-stone-400">Last FIRMS check: {lastUpdate?new Date(lastUpdate).toLocaleString():'none'}</div>
+    <div className="mt-1 text-stone-400">Last confirmed data update: {lastUpdate?new Date(lastUpdate).toLocaleString():'not confirmed'}</div>
     {detail&&<div className="mt-1 text-stone-500">{detail}</div>}
     <div className="mt-1 text-[10px] text-stone-500">Approximate ground tracks/swaths; not altitude-rendered satellites or confirmed observations. FIRMS can lag hours.</div>
   </div>;
