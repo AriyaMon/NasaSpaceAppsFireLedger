@@ -6,16 +6,16 @@ Harmonized **MODIS (1 km)**, **VIIRS (375 m)**, and **Landsat 8/9 (30 m)** 26-ye
 
 - **Live Public URL**: `https://hackathonteam12341.github.io/NasaSpaceAppsFireLedger/`
 
-### Why Deploying Directly from a Source Branch (`dev` / `site-david`) Shows a Blank Page
-Because FireLedger is a **Vite + React + TypeScript** app, the source `index.html` in `dev` points to `<script type="module" src="/src/main.tsx"></script>`. Browsers cannot execute uncompiled `.tsx` files directly, so if GitHub Pages is configured to deploy raw source files from `dev` or `site-david`, the page renders blank white.
+### Dual-Mode GitHub Pages Architecture (Works from `dev`, `gh-pages`, `site-*`, or GitHub Actions)
+FireLedger uses a dual-mode entrypoint so the live site never renders a blank page regardless of how **Settings → Pages → Build and deployment** is configured:
 
-Instead, `.github/workflows/deploy-pages.yml` automatically compiles the TypeScript/React code via `vite build` into static JavaScript/CSS bundles (`dist/`) and supports **both** GitHub Pages modes:
-
-1. **Option A — GitHub Actions (Recommended)**:
-   - Go to **Settings → Pages → Build and deployment → Source** and select **GitHub Actions**.
-2. **Option B — Deploy from a branch (`gh-pages`)**:
-   - Every run of `.github/workflows/deploy-pages.yml` also pushes the compiled `dist/` bundle to the **`gh-pages`** branch.
-   - If you keep **Source** set to **Deploy from a branch**, change the branch dropdown from `site-david` / `dev` to **`gh-pages` (`/ (root)`)** and click **Save**.
+1. **Local Vite Development & Build (`npm run dev` / `npm run build`)**:
+   - `index.html` retains `<script type="module" src="/src/main.tsx"></script>` so Vite's dev server and bundler work natively without swapping HTML files.
+2. **Direct Branch Hosting (`Deploy from a branch: dev / (root)` or `site-*`)**:
+   - Running `npm run build` executes `scripts/syncPagesBundle.mjs`, which syncs the compiled static bundle (`./assets/*`), `./pages-loader.js`, `./404.html`, and `./.nojekyll` into the repository root using relative URLs (`./`).
+   - When `index.html` is served directly by GitHub Pages from `dev` (where `/src/main.tsx` is not compiled on the fly), its inline fallback detector automatically boots `./pages-loader.js`, loading the prebuilt CSS and JS bundle cleanly.
+3. **GitHub Actions & `gh-pages` Branch**:
+   - Every push to `dev`, `main`, or `site-*` runs `.github/workflows/deploy-pages.yml`, which compiles the bundle, updates `./assets/` and `./pages-loader.js` on the branch, pushes `dist/` to `gh-pages`, and deploys via `actions/deploy-pages`.
 
 ---
 
@@ -32,9 +32,9 @@ Instead, `.github/workflows/deploy-pages.yml` automatically compiles the TypeScr
    ```bash
    npm run dev
    ```
-4. Build static bundle for GitHub Pages locally:
+4. Build static bundle and sync root GitHub Pages assets locally:
    ```bash
-   npm run build:pages
+   npm run build
    ```
 
 ## Run Locally (Python / Flask Alternative)

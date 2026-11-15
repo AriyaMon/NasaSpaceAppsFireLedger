@@ -28,5 +28,29 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      (function () {
+        var isUnbuiltSourceHtml = !!document.querySelector('script[src="/src/main.tsx"]');
+        if (!isUnbuiltSourceHtml) return;
+        var loadPrecompiledBundle = function () {
+          if (window.__FIRELEDGER_MOUNTED__ || window.__FIRELEDGER_LOADING_BUNDLE__) return;
+          window.__FIRELEDGER_LOADING_BUNDLE__ = true;
+          var s = document.createElement('script');
+          s.type = 'module';
+          s.src = './pages-loader.js';
+          document.head.appendChild(s);
+        };
+        if (location.hostname.endsWith('.github.io') || location.protocol === 'file:') {
+          loadPrecompiledBundle();
+        } else {
+          setTimeout(function () {
+            var hasViteClient = !!document.querySelector('script[src*="@vite/client"]');
+            if (!hasViteClient && !window.__FIRELEDGER_MOUNTED__) {
+              loadPrecompiledBundle();
+            }
+          }, 500);
+        }
+      })();
+    </script>
   </body>
 </html>

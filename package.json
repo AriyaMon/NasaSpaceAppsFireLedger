@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build",
-    "build:pages": "VITE_BASE_PATH=./ vite build",
+    "build": "VITE_BASE_PATH=./ vite build && node scripts/syncPagesBundle.mjs",
+    "build:pages": "VITE_BASE_PATH=./ vite build && node scripts/syncPagesBundle.mjs",
     "start": "NODE_ENV=production tsx server.ts",
     "sync-db": "tsx scripts/syncGithubRawDb.ts",
     "preview": "vite preview",
