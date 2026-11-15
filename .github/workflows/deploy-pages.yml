@@ -1,10 +1,13 @@
-name: Deploy FireLedger to GitHub Pages
+name: Build and Publish FireLedger
 
 on:
   push:
-    branches:
-      - dev
-      - main
+    branches: [dev]
+    paths-ignore:
+      - 'assets/**'
+      - '404.html'
+      - '.nojekyll'
+      - 'satellite-tles.json'
   workflow_dispatch:
 
 permissions:
@@ -13,51 +16,67 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: fireledger-compiled-site
   cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout dev code
         uses: actions/checkout@v4
+        with:
+          ref: dev
+          persist-credentials: true
 
-      - name: Setup Node.js
+      - name: Use Node 22
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: '22'
 
-      - name: Install dependencies
+      - name: Install project dependencies
         run: npm install --legacy-peer-deps
 
-      - name: Run unit tests
-        run: npx tsx --test src/lib/*.test.ts
+      - name: Test orbit calculations
+        run: npx tsx --test src/lib/satelliteTracking.test.ts
 
-      - name: Build static observatory bundle
+      - name: Snapshot fresh orbital elements
+        run: node scripts/fetchTleSnapshot.mjs
+
+      - name: Build browser-ready site
         env:
-          VITE_BASE_PATH: /${{ github.event.repository.name }}/
+          VITE_BASE_PATH: /APPS/
         run: npm run build
 
-      - name: Add SPA 404 fallback and .nojekyll
+      - name: Verify compiled app
         run: |
-          cp dist/index.html dist/404.html
-          touch dist/.nojekyll
+          test -f dist/index.html
+          test -d dist/assets
+          if grep -q 'src/main.tsx' dist/index.html; then
+            echo 'Vite source entry is still in output' >&2
+            exit 1
+          fi
 
-      - name: Publish compiled bundle to gh-pages branch
+      - name: Publish prebuilt site into dev for branch-based Pages
         run: |
-          cd dist
-          git init
+          rm -rf assets
+          cp -R dist/assets ./assets
+          cp dist/index.html ./index.html
+          cp dist/index.html ./404.html
+          cp dist/satellite-tles.json ./satellite-tles.json
+          touch .nojekyll
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b gh-pages
-          git add -A
-          git commit -m "Deploy compiled FireLedger static bundle (${GITHUB_SHA::7})"
-          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          git add -A index.html 404.html assets satellite-tles.json .nojekyll
+          if ! git diff --cached --quiet; then
+            git commit -m "build: publish compiled React app for GitHub Pages [skip ci]"
+            git push origin HEAD:dev
+          fi
 
-      - name: Upload GitHub Pages artifact
+      - name: Configure Actions-based Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Vite output for Actions-based Pages
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./dist
@@ -70,6 +89,6 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Deploy to GitHub Pages
+      - name: Deploy browser-ready site when Pages uses Actions
         id: deployment
         uses: actions/deploy-pages@v4

@@ -219,6 +219,31 @@ async function createServer() {
   const app = express();
   app.use(express.json({ limit: '2mb' }));
 
+  // Proxy CelesTrak TLEs to support browsers where cross-origin fetching is unavailable.
+  // Cache for two hours; never return invented orbital data on failure.
+  let tleCache: { at: number; tles: Record<string,string> } | null = null;
+  app.get('/api/satellites/tles', async (_req, res) => {
+    if (tleCache && Date.now() - tleCache.at < 2 * 3600_000) {
+      res.json({ tles: tleCache.tles, fetchedAt: new Date(tleCache.at).toISOString() });
+      return;
+    }
+    const ids = [25994, 27424, 37849, 43013, 54234];
+    const pairs = await Promise.all(ids.map(async (id) => {
+      try {
+        const response = await fetch(`https://celestrak.org/NORAD/elements/gp.php?CATNR=${id}&FORMAT=TLE`, {
+          signal: AbortSignal.timeout(10000),
+        });
+        if (!response.ok) return [String(id), ''] as const;
+        const tle = await response.text();
+        if (!tle.includes('1 ') || !tle.includes('2 ')) return [String(id), ''] as const;
+        return [String(id), tle] as const;
+      } catch { return [String(id), ''] as const; }
+    }));
+    const tles = Object.fromEntries(pairs);
+    if (Object.values(tles).some(Boolean)) tleCache = { at: Date.now(), tles };
+    res.json({ tles, fetchedAt: new Date().toISOString() });
+  });
+
   app.get('/api/health', (_req, res) => {
     res.json({
       ok: true,
@@ -489,8 +514,8 @@ async function createServer() {
 
     const areaStr = `${bbox.west},${bbox.south},${bbox.east},${bbox.north}`;
     const feeds: Array<{ apiSource: string; sensor: SensorDetection['sensor'] }> = [
-      { apiSource: 'VIIRS_SNPP_NRT', sensor: 'VIIRS_SNPP' },
       { apiSource: 'VIIRS_NOAA20_NRT', sensor: 'VIIRS_N20' },
+      { apiSource: 'VIIRS_NOAA21_NRT', sensor: 'VIIRS_N21' },
       { apiSource: 'MODIS_NRT', sensor: 'MODIS' },
       { apiSource: 'LANDSAT_NRT', sensor: 'LANDSAT9' },
     ];
