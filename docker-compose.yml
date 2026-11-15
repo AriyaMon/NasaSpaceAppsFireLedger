@@ -1,0 +1,18 @@
+services:
+  fireledger:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: fireledger:alpine
+    container_name: fireledger-web
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - PORT=3000
+      - HOST=0.0.0.0
+      - FIRMS_MAP_KEY=${FIRMS_MAP_KEY:-}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITHUB_REPO=${GITHUB_REPO:-HackathonTeam12341/NasaSpaceAppsFireLedger}
+      - LOCAL_LLM_URL=${LOCAL_LLM_URL:-}
+      - LOCAL_LLM_MODEL=${LOCAL_LLM_MODEL:-fireledger-mistral-7b}
+    restart: unless-stopped

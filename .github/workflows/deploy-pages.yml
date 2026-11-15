@@ -5,6 +5,7 @@ on:
     branches:
       - dev
       - main
+      - ryan_dev
     paths-ignore:
       - 'assets/**'
       - 'pages-loader.js'

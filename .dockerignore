@@ -1,0 +1,25 @@
+# Exclude heavy local directories and caches from Docker build context
+node_modules
+.venv
+venv
+env
+__pycache__
+*.py[cod]
+*$py.class
+.git
+.github
+.aistudio
+.playwright-cli
+dist
+build
+coverage
+*.log
+.DS_Store
+Thumbs.db
+.env
+.env.*
+!.env.example
+public/assets/aistudio
+kaggle/fireledger_build
+kaggle/fireledger-mistral-7b-qlora
+*.sqlite

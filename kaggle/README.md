@@ -9,8 +9,8 @@ This folder contains the self-contained **Kaggle GPU / CPU scripts** for scaling
 1. Build the React frontend once (`npm install && npm run build`) so `./dist/` exists.
 2. Create `.env` in the **project root folder** (next to `app.py` and `package.json`):
    ```env
-   FIRMS_MAP_KEY="[REDACTED]"
-   GITHUB_REPO="[REDACTED]"
+   FIRMS_MAP_KEY="your_nasa_firms_map_key"
+   GITHUB_REPO="HackathonTeam12341/NasaSpaceAppsFireLedger"
    GITHUB_TOKEN="your_github_pat"
    ```
    *(No `LOCAL_LLM_URL` is required because Mistral 7B runs on Kaggle, not in VS Code.)*
@@ -29,7 +29,7 @@ This folder contains the self-contained **Kaggle GPU / CPU scripts** for scaling
 2. Open **Add-ons → Secrets** and enable:
    - `FIRMS_MAP_KEY`
    - `GITHUB_TOKEN` (Fine-grained PAT with **Contents: Read and Write**)
-   - `GITHUB_REPO` = `[REDACTED]`
+   - `GITHUB_REPO` = `HackathonTeam12341/NasaSpaceAppsFireLedger`
 3. Paste and run `/kaggle/1_worldwide_ingest_and_harmonize.py`.
 
 ---
@@ -39,7 +39,7 @@ This folder contains the self-contained **Kaggle GPU / CPU scripts** for scaling
 1. Open a Kaggle Notebook with **GPU T4 x2** (or P100 16 GB) and **Internet ON**.
 2. Enable Kaggle Secrets:
    - `GITHUB_TOKEN`
-   - `GITHUB_REPO` = `[REDACTED]`
+   - `GITHUB_REPO` = `HackathonTeam12341/NasaSpaceAppsFireLedger`
    *(No `HF_TOKEN` needed — defaults automatically to ungated `NousResearch/Mistral-7B-Instruct-v0.3`.)*
 3. Cell 1:
    ```python
