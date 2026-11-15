@@ -8,6 +8,8 @@ import {
 } from 'maplibre-gl';
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url';
 import type { Bbox, GeoJsonFeatureCollection, GlobeCell } from '../lib/types.ts';
+import { SatelliteTracking } from './SatelliteTracking.tsx';
+import { triggerLiveFirms } from '../lib/apiClient.ts';
 
 setWorkerUrl(maplibreWorkerUrl);
 
@@ -36,6 +38,7 @@ export const EarthGlobe3D: React.FC<EarthGlobe3DProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
+  const [satelliteMap, setSatelliteMap] = useState<MapLibreMap | null>(null);
   const mapLoadedRef = useRef(false);
   const popupRef = useRef<Popup | null>(null);
 
@@ -205,6 +208,7 @@ export const EarthGlobe3D: React.FC<EarthGlobe3DProps> = ({
 
     map.on('load', () => {
       mapLoadedRef.current = true;
+      setSatelliteMap(map);
 
       map.addSource('aoi-bbox', {
         type: 'geojson',
@@ -510,6 +514,8 @@ export const EarthGlobe3D: React.FC<EarthGlobe3DProps> = ({
           −
         </button>
       </div>
+
+      {satelliteMap && <SatelliteTracking map={satelliteMap} bbox={selectedBbox} regionName={regionName} onRefresh={() => triggerLiveFirms(selectedBbox, 1)} />}
 
       {/* Bottom-Left Compact Legend */}
       <div className="pointer-events-none absolute bottom-3.5 left-3.5 z-10 rounded border border-white/10 bg-[#090a0d]/85 px-2.5 py-1 font-mono text-[10px] text-stone-300">
