@@ -1,285 +1,441 @@
-# FireFusion Kaggle worker — single notebook cell
-# Kaggle Secrets required: GITHUB_TOKEN, NGROK_AUTHTOKEN
-# Optional: HF_TOKEN (for hosted Mistral inference)
-import os, json, time, uuid, base64, sqlite3, threading
+# FireLedger / FireFusion — GitHub SQL polling worker
+# Run this entire cell in ONE Kaggle notebook.
+# Kaggle Secrets: GITHUB_TOKEN (required), HF_TOKEN (optional).
+# No .env files. No ngrok. No web server.
+
+import os, time, json, uuid, sqlite3, requests, base64, traceback
 from pathlib import Path
 from datetime import datetime, timezone
-import requests
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-import uvicorn
-from pyngrok import ngrok
 
-OWNER, REPO, BRANCH = "AriyaMon", "NasaSpaceAppsDATABASE_KAGGLE", "main"
-DB_FILE = Path("/kaggle/working/fireledger.db")
-DB_REPO_PATH = "Database/fireledger.db"
-POLL_SECONDS = 10
-GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
-NGROK_TOKEN = os.environ["NGROK_AUTHTOKEN"]
-HF_TOKEN = os.environ.get("HF_TOKEN", "")
-HF_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
-API = FastAPI(title="FireFusion API")
-API.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# --------------------------- CONFIG ---------------------------
+DB_OWNER = "AriyaMon"
+DB_REPO = "NasaSpaceAppsDATABASE_KAGGLE"
+DB_BRANCH = "main"
+DB_PATH = "Database/fireledger.db"
+LOCAL_DB = Path("/kaggle/working/fireledger.db")
 
-def stamp():
+POLL_SECONDS = 20
+MAX_REQUESTS_PER_CYCLE = 5
+ANALYSIS_COUNTRY = ("CA", "Canada")
+START_DATE = "2023-01-01"
+END_DATE = "2024-01-01"   # exclusive: includes all of 2023
+
+# Optional hosted Mistral inference. If absent/unavailable, a factual
+# extractive response is produced instead. Set HF_MODEL to your fine-tuned
+# model/adapter endpoint when you have published it.
+HF_MODEL = os.environ.get("HF_MODEL", "mistralai/Mistral-7B-Instruct-v0.3")
+
+from kaggle_secrets import UserSecretsClient
+secrets = UserSecretsClient()
+GITHUB_TOKEN = secrets.get_secret("GITHUB_TOKEN")
+try:
+    HF_TOKEN = secrets.get_secret("HF_TOKEN")
+except Exception:
+    HF_TOKEN = None
+
+if not GITHUB_TOKEN:
+    raise RuntimeError("Add GITHUB_TOKEN in Kaggle → Add-ons → Secrets.")
+
+API_ROOT = f"https://api.github.com/repos/{DB_OWNER}/{DB_REPO}/contents/{DB_PATH}"
+HEADERS = {
+    "Authorization": f"Bearer {GITHUB_TOKEN}",
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28"
+}
+
+def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
-def gh_headers():
-    return {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28"}
-
-def restore_database():
-    url = f"https://api.github.com/repos/{OWNER}/{REPO}/contents/{DB_REPO_PATH}"
-    r = requests.get(url, headers=gh_headers(), params={"ref": BRANCH}, timeout=30)
+def github_download_database():
+    """Pull the current SQLite file from the configured GitHub branch."""
+    r = requests.get(API_ROOT, headers=HEADERS,
+                     params={"ref": DB_BRANCH}, timeout=60)
     if r.status_code == 404:
         return False
     r.raise_for_status()
-    DB_FILE.write_bytes(base64.b64decode(r.json()["content"]))
-    print("Restored Database/fireledger.db from GitHub.")
+    meta = r.json()
+    # Use download_url: Contents API's inline content can be empty for larger files.
+    download_url = meta.get("download_url")
+    if not download_url:
+        raise RuntimeError("GitHub did not return a database download URL.")
+    data = requests.get(download_url, timeout=120)
+    data.raise_for_status()
+    LOCAL_DB.parent.mkdir(parents=True, exist_ok=True)
+    LOCAL_DB.write_bytes(data.content)
     return True
 
-def sync_database():
-    url = f"https://api.github.com/repos/{OWNER}/{REPO}/contents/{DB_REPO_PATH}"
-    r = requests.get(url, headers=gh_headers(), params={"ref": BRANCH}, timeout=30)
-    sha = r.json().get("sha") if r.status_code == 200 else None
-    if r.status_code not in (200, 404):
+def github_upload_database():
+    """Push the updated SQLite snapshot to the same GitHub path."""
+    # Re-fetch the current SHA immediately before the write.
+    r = requests.get(API_ROOT, headers=HEADERS,
+                     params={"ref": DB_BRANCH}, timeout=60)
+    sha = None
+    if r.status_code == 200:
+        sha = r.json()["sha"]
+    elif r.status_code != 404:
         r.raise_for_status()
-    payload = {"message": "Update FireLedger SQL database", "branch": BRANCH,
-               "content": base64.b64encode(DB_FILE.read_bytes()).decode()}
+
+    payload = {
+        "message": "FireLedger: process unanswered requests",
+        "branch": DB_BRANCH,
+        "content": base64.b64encode(LOCAL_DB.read_bytes()).decode("ascii")
+    }
     if sha:
         payload["sha"] = sha
-    out = requests.put(url, headers=gh_headers(), json=payload, timeout=90)
+    out = requests.put(API_ROOT, headers=HEADERS, json=payload, timeout=180)
     out.raise_for_status()
-    print("SQL snapshot synced to GitHub.")
+    print("GitHub SQL database updated:", out.json()["commit"]["html_url"])
 
-def connect():
-    c = sqlite3.connect(DB_FILE, timeout=30)
-    c.row_factory = sqlite3.Row
-    return c
+def db():
+    conn = sqlite3.connect(LOCAL_DB, timeout=60)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=60000")
+    return conn
 
-def initialize_database():
-    with connect() as c:
-        c.executescript("""
-        CREATE TABLE IF NOT EXISTS requests(
-          request_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, request_type TEXT NOT NULL,
-          created_at TEXT NOT NULL, status TEXT NOT NULL, role TEXT NOT NULL,
-          area TEXT, time_start TEXT, time_end TEXT, message TEXT NOT NULL,
-          context_request_id TEXT, ai_answer TEXT, error TEXT);
-        CREATE TABLE IF NOT EXISTS conversations(
-          conversation_id TEXT PRIMARY KEY, created_at TEXT, role TEXT, area TEXT,
-          time_start TEXT, time_end TEXT);
-        CREATE TABLE IF NOT EXISTS messages(
-          message_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, request_id TEXT NOT NULL,
-          sender TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS summaries(
-          summary_id TEXT PRIMARY KEY, request_id TEXT NOT NULL, content TEXT NOT NULL,
-          fact_ledger TEXT, dataset_version TEXT, model_version TEXT, created_at TEXT);
-        CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS fire_observations(
-          observation_id TEXT PRIMARY KEY, observed_at TEXT NOT NULL, country TEXT NOT NULL,
-          latitude REAL NOT NULL, longitude REAL NOT NULL, fire_type TEXT,
-          frp_mw REAL, confidence REAL, population_nearby INTEGER,
-          nearest_place TEXT, distance_to_population_km REAL, source TEXT);
+def ensure_column(conn, table, column, definition):
+    existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+def initialize_schema():
+    """Create missing tables and safely add columns to the existing schema."""
+    with db() as conn:
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS requests (
+          request_id TEXT PRIMARY KEY,
+          conversation_id TEXT,
+          request_type TEXT DEFAULT 'briefing',
+          created_at TEXT,
+          status TEXT DEFAULT 'unanswered',
+          role TEXT DEFAULT 'Emergency responder',
+          area TEXT,
+          time_start TEXT DEFAULT '2023-01-01',
+          time_end TEXT DEFAULT '2023-12-31',
+          message TEXT,
+          context_request_id TEXT,
+          ai_answer TEXT,
+          error TEXT
+        );
+        CREATE TABLE IF NOT EXISTS conversations (
+          conversation_id TEXT PRIMARY KEY,
+          created_at TEXT,
+          role TEXT,
+          area TEXT,
+          time_start TEXT,
+          time_end TEXT
+        );
+        CREATE TABLE IF NOT EXISTS messages (
+          message_id TEXT PRIMARY KEY,
+          conversation_id TEXT,
+          request_id TEXT,
+          sender TEXT,
+          content TEXT,
+          created_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS summaries (
+          summary_id TEXT PRIMARY KEY,
+          request_id TEXT,
+          content TEXT,
+          fact_ledger TEXT,
+          dataset_version TEXT,
+          model_version TEXT,
+          created_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS metadata (
+          key TEXT PRIMARY KEY,
+          value TEXT
+        );
+        CREATE TABLE IF NOT EXISTS fire_observations (
+          observation_id TEXT PRIMARY KEY,
+          observed_at TEXT NOT NULL,
+          country TEXT NOT NULL,
+          latitude REAL NOT NULL,
+          longitude REAL NOT NULL,
+          fire_type TEXT,
+          frp_mw REAL,
+          confidence REAL,
+          population_nearby INTEGER,
+          nearest_place TEXT,
+          distance_to_population_km REAL,
+          source TEXT
+        );
         """)
-        # Upgrade the original FireLedger schema without replacing its tables/data.
-        columns = {r["name"] for r in c.execute("PRAGMA table_info(requests)")}
-        for name, kind in [("south","REAL"),("west","REAL"),("north","REAL"),("east","REAL")]:
-            if name not in columns:
-                c.execute(f"ALTER TABLE requests ADD COLUMN {name} {kind}")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status,created_at)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_fire_date_country ON fire_observations(country,observed_at)")
-        c.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('project','FireLedger')")
-        c.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('analysis_scope','Canada only; calendar year 2023')")
-        c.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('dataset_status','Awaiting 2023 Canada observations')")
-    print("Existing GitHub SQL database initialized/upgraded:", DB_FILE)
+        # Upgrade older request schemas without dropping existing rows.
+        for col, definition in [
+            ("conversation_id", "TEXT"), ("request_type", "TEXT DEFAULT 'briefing'"),
+            ("created_at", "TEXT"), ("status", "TEXT DEFAULT 'unanswered'"),
+            ("role", "TEXT DEFAULT 'Emergency responder'"), ("area", "TEXT"),
+            ("time_start", "TEXT DEFAULT '2023-01-01'"),
+            ("time_end", "TEXT DEFAULT '2023-12-31'"), ("message", "TEXT"),
+            ("context_request_id", "TEXT"), ("ai_answer", "TEXT"), ("error", "TEXT"),
+            ("south", "REAL"), ("west", "REAL"), ("north", "REAL"), ("east", "REAL")
+        ]:
+            ensure_column(conn, "requests", col, definition)
 
-# Restore first, then initialize/upgrade the same database.
-restore_database()
-initialize_database()
-sync_database()  # Creates Database/fireledger.db on GitHub if it does not exist yet.
+        for table, definitions in {
+            "messages": [
+                ("message_id", "TEXT"), ("conversation_id", "TEXT"),
+                ("request_id", "TEXT"), ("sender", "TEXT"),
+                ("content", "TEXT"), ("created_at", "TEXT")],
+            "summaries": [
+                ("summary_id", "TEXT"), ("request_id", "TEXT"),
+                ("content", "TEXT"), ("fact_ledger", "TEXT"),
+                ("dataset_version", "TEXT"), ("model_version", "TEXT"),
+                ("created_at", "TEXT")]
+        }.items():
+            for col, definition in definitions:
+                ensure_column(conn, table, col, definition)
 
-def canada_2023_observations(bounds=None):
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_requests_status_created ON requests(status, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_observations_scope ON fire_observations(country, observed_at)")
+        conn.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
+                     ("analysis_scope", "Canada only; calendar year 2023"))
+        conn.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
+                     ("dataset_status", "Awaiting Canada 2023 observations"))
+    print("Database schema checked. Existing records preserved.")
+
+def get_request_area(job):
+    """Accept either JSON area bounds or the original south/west/north/east columns."""
+    if job.get("area"):
+        try:
+            area = json.loads(job["area"]) if isinstance(job["area"], str) else job["area"]
+            return {k: float(area[k]) for k in ("south", "west", "north", "east")}
+        except Exception:
+            pass
+    keys = ("south", "west", "north", "east")
+    if all(job.get(k) is not None for k in keys):
+        return {k: float(job[k]) for k in keys}
+    return None
+
+def load_fire_facts(job):
+    """Read only Canadian observations dated in 2023, optionally clipped to request bounds."""
     sql = """SELECT * FROM fire_observations
-             WHERE country IN ('CA','Canada')
-             AND observed_at >= '2023-01-01'
-             AND observed_at < '2024-01-01'"""
-    args = []
+             WHERE country IN (?,?)
+               AND observed_at >= ? AND observed_at < ?"""
+    args = [*ANALYSIS_COUNTRY, START_DATE, END_DATE]
+    bounds = get_request_area(job)
     if bounds:
-        sql += " AND latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?"
-        args += [bounds["south"], bounds["north"], bounds["west"], bounds["east"]]
-    with connect() as c:
-        return [dict(x) for x in c.execute(sql, args).fetchall()]
+        sql += """ AND latitude BETWEEN ? AND ?
+                   AND longitude BETWEEN ? AND ?"""
+        args.extend([bounds["south"], bounds["north"], bounds["west"], bounds["east"]])
 
-def summarize_facts(rows):
+    with db() as conn:
+        rows = [dict(r) for r in conn.execute(sql, args).fetchall()]
+
     if not rows:
-        return {"observation_count": 0, "message":
-          "No Canada 2023 observations have been loaded into fire_observations yet."}
-    frp = [float(x["frp_mw"] or 0) for x in rows]
-    places = {}
-    for x in rows:
-        place = x.get("nearest_place")
-        dist = x.get("distance_to_population_km")
-        if place and dist is not None:
-            places[place] = min(float(dist), places.get(place, float("inf")))
-    nearby = sum(1 for x in rows if x.get("population_nearby") == 1)
-    types = {}
-    for x in rows:
-        t = x.get("fire_type") or "Unclassified"
-        types[t] = types.get(t, 0) + 1
-    return {"observation_count": len(rows), "mean_frp_mw": round(sum(frp)/len(frp), 2),
-      "max_frp_mw": round(max(frp), 2), "population_nearby_observations": nearby,
-      "fire_type_counts": types, "nearest_places": sorted(
-        [{"place": k, "distance_km": round(v, 1)} for k,v in places.items()],
-        key=lambda z:z["distance_km"])[:8],
-      "observations": rows[:100]}
+        return {
+            "scope": "Canada, 2023",
+            "observation_count": 0,
+            "notice": "No Canada 2023 observations are loaded in fire_observations yet."
+        }
 
-ROLE = {
- "Ambulance / medical": "Prioritize smoke exposure screening, medical readiness, population proximity, and safe coordination. Never invent patients or hospitals.",
- "Firefighter": "Prioritize fire type, FRP intensity, clusters, uncertainty, and situational awareness. Do not infer fire perimeter, spread direction, or wind.",
- "Emergency responder": "Prioritize population proximity, nearest named places, monitoring priorities, and coordination.",
- "Scientist / analyst": "Prioritize sensor evidence, classification confidence, FRP, spatial patterns, and data limitations.",
- "Land manager": "Prioritize fuel/land context, ecological monitoring, and areas requiring field verification."
+    frps = [float(r["frp_mw"]) for r in rows if r.get("frp_mw") is not None]
+    fire_types, places = {}, {}
+    for row in rows:
+        kind = row.get("fire_type") or "Unclassified"
+        fire_types[kind] = fire_types.get(kind, 0) + 1
+        place, distance = row.get("nearest_place"), row.get("distance_to_population_km")
+        if place and distance is not None:
+            places[place] = min(float(distance), places.get(place, float("inf")))
+
+    return {
+        "scope": "Canada, 2023",
+        "observation_count": len(rows),
+        "fire_type_counts": fire_types,
+        "mean_frp_mw": round(sum(frps) / len(frps), 2) if frps else None,
+        "max_frp_mw": round(max(frps), 2) if frps else None,
+        "population_nearby_observations": sum(
+            1 for r in rows if r.get("population_nearby") in (1, True, "1")
+        ),
+        "nearest_places": [
+            {"place": name, "distance_km": round(distance, 1)}
+            for name, distance in sorted(places.items(), key=lambda item: item[1])[:10]
+        ],
+        "observations_sample": rows[:80]
+    }
+
+ROLE_GUIDANCE = {
+    "Ambulance": "Focus on potential smoke exposure, nearby populated places, medical readiness, and uncertainty. Do not invent patients or medical facilities.",
+    "Ambulance / medical": "Focus on potential smoke exposure, nearby populated places, medical readiness, and uncertainty. Do not invent patients or medical facilities.",
+    "Firefighter": "Focus on reported fire type, satellite FRP, spatial clusters, and data uncertainty. Do not invent perimeters, spread direction, wind, or tactical instructions.",
+    "Emergency responder": "Focus on nearby populated places, distances, observation clusters, monitoring priorities, and uncertainty.",
+    "Emergency responders": "Focus on nearby populated places, distances, observation clusters, monitoring priorities, and uncertainty.",
+    "Scientist": "Focus on sensor evidence, confidence, FRP, spatial patterns, and limitations.",
+    "Scientist / analyst": "Focus on sensor evidence, confidence, FRP, spatial patterns, and limitations.",
+    "Land manager": "Focus on recorded fuel/land-cover labels, ecological context, nearby places, and field-verification priorities."
 }
 
-def grounded_answer(job, facts):
+SYSTEM_PROMPT = """You are FireLedger, a careful wildfire intelligence summarizer.
+Use only the supplied SQL facts. Do not invent incidents, fire perimeters, wind,
+weather, roads, casualties, hospitals, evacuation orders, or spread direction.
+FRP means fire radiative power, not fireline intensity. Population proximity is
+a screening indicator, not proof of exposure. Label fire type as unclassified
+unless the data explicitly provides a classification. State limitations.
+Do not give dispatch commands or claim to replace official sources."""
+
+def generate_answer(job, facts):
     if facts["observation_count"] == 0:
-        return ("No briefing can be calculated yet: the SQL database currently contains no fire observations "
-                "for Canada in 2023. The map and request system are ready; load the dataset into "
-                "fire_observations when it becomes available. No global or other-year records were used.")
+        return (
+            "No data-backed briefing can be generated yet. The database currently "
+            "contains no fire observations for Canada during 2023"
+            + ( " in the selected map area." if get_request_area(job) else "." )
+            + " The request has been checked against the required Canada-only, "
+              "2023-only scope. No other countries or years were included."
+        )
+
+    role = job.get("role") or "Emergency responder"
     prompt = {
-      "system": "You are FireFusion, a cautious wildfire intelligence summarizer. Use only supplied facts. "
-        "Never invent fire perimeters, wind, weather, roads, casualties, hospitals, or evacuation orders. "
-        "FRP is satellite radiant power, not fireline intensity. Population proximity is a screening flag, "
-        "not proof of exposure. State uncertainty and do not issue dispatch commands.",
-      "role": job["role"], "role_guidance": ROLE[job["role"]],
-      "question": job["message"], "facts": facts,
-      "scope": "Canada only, 2023 only"
+        "responder_role": role,
+        "role_guidance": ROLE_GUIDANCE.get(role, ROLE_GUIDANCE["Emergency responder"]),
+        "user_question": job.get("message") or "Summarize the fire observations.",
+        "evidence": facts,
+        "required_sections": [
+            "Situation overview", "Fire type", "Fire activity (FRP)",
+            "Population proximity", "Relevant nearby places", "Limitations"
+        ]
     }
+
     if HF_TOKEN:
         try:
-            r = requests.post("https://router.huggingface.co/v1/chat/completions",
-              headers={"Authorization": f"Bearer {HF_TOKEN}"},
-              json={"model": HF_MODEL, "messages":[
-                {"role":"system","content":prompt["system"]},
-                {"role":"user","content":json.dumps(prompt)}],
-                "temperature":0.15,"max_tokens":700}, timeout=90)
-            r.raise_for_status()
-            return r.json()["choices"][0]["message"]["content"].strip()
-        except Exception as e:
-            print("Mistral endpoint unavailable; using factual fallback:", e)
-    nearest = facts["nearest_places"] or []
-    return (f"{job['role']} briefing — Canada, 2023\n"
-      f"Observations: {facts['observation_count']}. Mean FRP: {facts['mean_frp_mw']} MW; "
-      f"maximum FRP: {facts['max_frp_mw']} MW.\n"
-      f"Fire-type labels: {json.dumps(facts['fire_type_counts'])}. "
-      f"Observations flagged near population: {facts['population_nearby_observations']}.\n"
-      f"Nearest mapped places: {json.dumps(nearest)}.\n"
-      f"Role focus: {ROLE[job['role']]}\n"
-      "FRP is not fireline intensity. Population proximity is a screening indicator. "
-      "Confirm all conditions with current authoritative sources before operational decisions.")
+            response = requests.post(
+                "https://router.huggingface.co/v1/chat/completions",
+                headers={"Authorization": f"Bearer {HF_TOKEN}"},
+                json={
+                    "model": HF_MODEL,
+                    "messages": [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": json.dumps(prompt)}
+                    ],
+                    "temperature": 0.15,
+                    "max_tokens": 650
+                },
+                timeout=120
+            )
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"].strip()
+        except Exception as exc:
+            print("Mistral inference unavailable; using grounded fallback:", str(exc)[:300])
 
-def process_pending():
-    with connect() as c:
-        row = c.execute("SELECT * FROM requests WHERE status='pending' ORDER BY created_at LIMIT 1").fetchone()
-        if not row:
+    return (
+        f"{role} briefing — Canada, 2023\n\n"
+        f"Situation overview: {facts['observation_count']} satellite fire observations "
+        f"are recorded in the selected area.\n"
+        f"Fire type: {json.dumps(facts['fire_type_counts'])}. These are dataset labels; "
+        f"unclassified records have not been guessed.\n"
+        f"Fire activity: mean FRP {facts['mean_frp_mw']} MW; maximum FRP "
+        f"{facts['max_frp_mw']} MW. FRP is not fireline intensity.\n"
+        f"Population proximity: {facts['population_nearby_observations']} observations "
+        f"are flagged as near population. This is a screening indicator, not proof of exposure.\n"
+        f"Nearest mapped places: {json.dumps(facts['nearest_places'])}.\n"
+        f"Limitations: {ROLE_GUIDANCE.get(role, ROLE_GUIDANCE['Emergency responder'])} "
+        "Verify current conditions with authoritative sources."
+    )
+
+def process_one_unanswered():
+    with db() as conn:
+        row = conn.execute("""
+            SELECT * FROM requests
+            WHERE lower(coalesce(status,'unanswered')) IN ('unanswered','pending')
+            ORDER BY coalesce(created_at,'') ASC
+            LIMIT 1
+        """).fetchone()
+        if row is None:
             return False
         job = dict(row)
-        c.execute("UPDATE requests SET status='processing' WHERE request_id=?", (job["request_id"],))
+        conn.execute(
+            "UPDATE requests SET status='processing', error=NULL WHERE request_id=?",
+            (job["request_id"],)
+        )
+
+    # Persist the processing state so it is visible in the shared SQL snapshot.
+    github_upload_database()
+
     try:
-        bounds = {k: job[k] for k in ("south","west","north","east")}
-        facts = summarize_facts(canada_2023_observations(bounds))
-        answer = grounded_answer(job, facts)
-        with connect() as c:
-            c.execute("UPDATE requests SET status='completed',ai_answer=?,error=NULL WHERE request_id=?",
-                      (answer, job["request_id"]))
-            c.execute("""INSERT INTO summaries
-                      (summary_id,request_id,content,fact_ledger,dataset_version,model_version,created_at)
-                      VALUES(?,?,?,?,?,?,?)""",
-                      (str(uuid.uuid4()),job["request_id"],answer,json.dumps(facts),
-                       "Canada-2023","Mistral-7B-LoRA" if HF_TOKEN else "grounded-fallback",stamp()))
-            c.execute("INSERT INTO messages VALUES(?,?,?,?,?,?)",
-                      (str(uuid.uuid4()), job["conversation_id"], job["request_id"], "assistant", answer, stamp()))
-        sync_database()
-        print("Completed request", job["request_id"])
-    except Exception as e:
-        with connect() as c:
-            c.execute("UPDATE requests SET status='error',error=? WHERE request_id=?",
-                      (str(e)[:1000], job["request_id"]))
-        sync_database()
-        print("Request failed:", repr(e))
-    return True
+        facts = load_fire_facts(job)
+        answer = generate_answer(job, facts)
+        now = utc_now()
 
-def poll_loop():
-    print(f"Polling the GitHub-backed SQL snapshot every {POLL_SECONDS}s.")
-    while True:
-        try:
-            if not process_pending():
-                time.sleep(POLL_SECONDS)
-        except Exception as e:
-            print("Worker error:", repr(e))
-            time.sleep(POLL_SECONDS)
+        with db() as conn:
+            conn.execute("""
+                UPDATE requests
+                SET status='answered', ai_answer=?, error=NULL
+                WHERE request_id=?
+            """, (answer, job["request_id"]))
 
-class RequestBody(BaseModel):
-    request_type: str = Field(pattern="^(briefing|chat)$")
-    role: str
-    area: dict
-    message: str = Field(default="", max_length=3000)
-    conversation_id: str | None = None
-    context_request_id: str | None = None
+            # Add assistant message if the existing messages table supports it.
+            message_cols = {r["name"] for r in conn.execute("PRAGMA table_info(messages)")}
+            if {"message_id","conversation_id","request_id","sender","content","created_at"}.issubset(message_cols):
+                conn.execute("""
+                    INSERT INTO messages(message_id,conversation_id,request_id,sender,content,created_at)
+                    VALUES(?,?,?,?,?,?)
+                """, (
+                    str(uuid.uuid4()), job.get("conversation_id"), job["request_id"],
+                    "assistant", answer, now
+                ))
 
-@API.get("/api/health")
-def health():
-    with connect() as c:
-        pending = c.execute("SELECT COUNT(*) FROM requests WHERE status='pending'").fetchone()[0]
-        total = c.execute("SELECT COUNT(*) FROM fire_observations WHERE country IN ('CA','Canada') AND observed_at >= '2023-01-01' AND observed_at < '2024-01-01'").fetchone()[0]
-    return {"ok": True, "scope": "Canada 2023", "observations": total, "pending": pending}
+            summary_cols = {r["name"] for r in conn.execute("PRAGMA table_info(summaries)")}
+            required = {"summary_id","request_id","content","created_at"}
+            if required.issubset(summary_cols):
+                conn.execute("""
+                    INSERT INTO summaries
+                    (summary_id,request_id,content,fact_ledger,dataset_version,model_version,created_at)
+                    VALUES(?,?,?,?,?,?,?)
+                """, (
+                    str(uuid.uuid4()), job["request_id"], answer,
+                    json.dumps(facts), "Canada-2023",
+                    HF_MODEL if HF_TOKEN else "grounded-fallback", now
+                ))
 
-@API.get("/api/map-data")
-def map_data():
-    rows = canada_2023_observations()
-    return {"scope":"Canada 2023","count":len(rows),"observations":rows}
+        github_upload_database()
+        print(f"ANSWERED: {job['request_id']}")
+        return True
 
-@API.post("/api/requests")
-def create_request(body: RequestBody):
-    roles = list(ROLE)
-    if body.role not in roles:
-        raise HTTPException(400, "Unknown responder role")
+    except Exception as exc:
+        with db() as conn:
+            conn.execute(
+                "UPDATE requests SET status='error', error=? WHERE request_id=?",
+                (str(exc)[:1500], job["request_id"])
+            )
+        github_upload_database()
+        print("FAILED:", job["request_id"], repr(exc))
+        return True
+
+# --------------------------- MAIN LOOP ---------------------------
+print("FireLedger worker starting.")
+print(f"GitHub SQL source: {DB_OWNER}/{DB_REPO}/{DB_PATH} ({DB_BRANCH})")
+print("Scope: Canada, January 1–December 31, 2023.")
+print("Queue statuses: unanswered (also accepts legacy pending).")
+print("No API server. No tunnel. No website connection.")
+
+if not github_download_database():
+    # The database repository/path must exist or be created first.
+    raise FileNotFoundError(
+        f"Could not find {DB_PATH} in {DB_OWNER}/{DB_REPO}. "
+        "Create the SQLite database file in that repository first."
+    )
+
+initialize_schema()
+github_upload_database()
+
+while True:
     try:
-        b = {k: float(body.area[k]) for k in ("south","west","north","east")}
-        if not (-85 <= b["south"] < b["north"] <= 85 and -180 <= b["west"] < b["east"] <= 180):
-            raise ValueError()
+        # Always pull the newest committed database before looking for work.
+        github_download_database()
+        initialize_schema()
+
+        processed = 0
+        while processed < MAX_REQUESTS_PER_CYCLE and process_one_unanswered():
+            processed += 1
+
+        if processed == 0:
+            print(f"[{utc_now()}] No unanswered requests. Checking again in {POLL_SECONDS}s.")
+        else:
+            print(f"Processed {processed} request(s).")
+
+    except KeyboardInterrupt:
+        print("Worker stopped by user.")
+        break
     except Exception:
-        raise HTTPException(400, "Invalid map bounds")
-    cid = body.conversation_id or str(uuid.uuid4())
-    rid, ts = str(uuid.uuid4()), stamp()
-    with connect() as c:
-        c.execute("INSERT OR IGNORE INTO conversations VALUES(?,?,?)", (cid, body.role, ts))
-        c.execute("""INSERT INTO requests(request_id,conversation_id,request_type,created_at,status,role,
-          area,time_start,time_end,south,west,north,east,message,context_request_id)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-          (rid,cid,body.request_type,ts,"pending",body.role,json.dumps(b),"2023-01-01","2023-12-31",
-           b["south"],b["west"],b["north"],b["east"],body.message,body.context_request_id))
-        c.execute("INSERT INTO messages VALUES(?,?,?,?,?,?)",
-          (str(uuid.uuid4()),cid,rid,"user",body.message,ts))
-    sync_database()
-    return {"request_id":rid,"conversation_id":cid,"status":"pending"}
+        traceback.print_exc()
 
-@API.get("/api/requests/{request_id}")
-def get_request(request_id: str):
-    with connect() as c:
-        row = c.execute("SELECT request_id,conversation_id,status,ai_answer,error FROM requests WHERE request_id=?",
-                        (request_id,)).fetchone()
-    if not row:
-        raise HTTPException(404,"Request not found")
-    return dict(row)
-
-def run():
-    ngrok.set_auth_token(NGROK_TOKEN)
-    threading.Thread(target=poll_loop, daemon=True).start()
-    public = ngrok.connect(8000, "http").public_url
-    print("\nAPI URL (paste into app.js API_BASE):", public)
-    print("GitHub remains the SQL snapshot store; this URL only bridges the static Pages frontend to Kaggle.")
-    uvicorn.run(API, host="0.0.0.0", port=8000)
-
-run()
+    time.sleep(POLL_SECONDS)
