@@ -18,7 +18,7 @@ This is an isolated project under `firefusion-next/`. The existing root applicat
 
 ## GitHub Pages
 Enable Pages for `HackathonTeam12341/NasaSpaceAppsFireLedger` on branch `main`, folder `/ (root)`. The app will then be available at:
-`https://hackathonte am12341.github.io/NasaSpaceAppsFireLedger/firefusion-next/`
+`https://hackathonteam12341.github.io/NasaSpaceAppsFireLedger/firefusion-next/`
 (Use the repository's actual Pages URL shown in Settings → Pages.)
 
 ## Kaggle setup — no .env files
