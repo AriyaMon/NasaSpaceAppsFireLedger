@@ -514,8 +514,8 @@ async function createServer() {
 
     const areaStr = `${bbox.west},${bbox.south},${bbox.east},${bbox.north}`;
     const feeds: Array<{ apiSource: string; sensor: SensorDetection['sensor'] }> = [
-      { apiSource: 'VIIRS_SNPP_NRT', sensor: 'VIIRS_SNPP' },
       { apiSource: 'VIIRS_NOAA20_NRT', sensor: 'VIIRS_N20' },
+      { apiSource: 'VIIRS_NOAA21_NRT', sensor: 'VIIRS_N21' },
       { apiSource: 'MODIS_NRT', sensor: 'MODIS' },
       { apiSource: 'LANDSAT_NRT', sensor: 'LANDSAT9' },
     ];
