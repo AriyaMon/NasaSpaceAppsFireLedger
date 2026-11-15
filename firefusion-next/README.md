@@ -1,33 +1,43 @@
 # FireFusion Next
 
-An isolated copy/extension of the FireFusion Leaflet map, built in this folder so the existing repository files remain untouched.
+This is an isolated project under `firefusion-next/`. The existing root application is untouched.
 
-## What is included
-- Leaflet world map with the same OpenStreetMap base-map approach.
-- Harmonized global-cell layer from the repository's `harmonized_global_cells.json`.
-- Rectangle area selection and selected-cell summary.
-- Responder profiles: ambulance/medical, firefighter, emergency responder, scientist/analyst, and land manager.
-- Date fields, AI briefing requests, and follow-up chat.
-- Kaggle FastAPI service, SQLite request queue, 10-second worker polling, and optional GitHub database snapshots.
+## Scope and map
+- Map opens centered on Canada.
+- All analytical queries are restricted to January 1 through December 31, 2023, and country Canada.
+- The map displays records returned by the Kaggle API from the SQL table `fire_observations`.
+- Required observation fields: `observation_id`, `observed_at`, `country`, `latitude`, `longitude`; optional fields include `fire_type`, `frp_mw`, `confidence`, `population_nearby`, `nearest_place`, `distance_to_population_km`, and `source`.
+- No fire observations are fabricated. Until the dataset is loaded, the map is centered on Canada and shows an awaiting-data state.
 
-## Run the webpage
-Enable GitHub Pages for this repository (Settings → Pages → Deploy from a branch → main → /(root) is the existing root site). To publish this folder as a separate project page, use a small root-level workflow or copy the folder into a dedicated branch/site. The files here are independent of the current root app.
+## Architecture
+1. The SQL source of truth is `AriyaMon/NasaSpaceAppsDATABASE_KAGGLE`, file `Database/fireledger.db`, branch `main`.
+2. Kaggle downloads that SQLite database at startup, initializes/upgrades its tables, and creates the database file on GitHub if it is not there yet.
+3. The Kaggle worker polls the local working copy of that same SQL database every 10 seconds for pending requests. Requests are synchronized to GitHub when submitted and when completed.
+4. The Kaggle API returns map observations and request results to this static GitHub Pages frontend.
+5. One Kaggle notebook/session must remain running for the API and worker to remain available. The ngrok URL is only the network bridge between Pages and Kaggle; the SQL database remains in the GitHub database repository.
 
-## Start the Kaggle backend
-1. Open a Kaggle notebook and add `kaggle_worker.py` as a code cell/file.
-2. Add Kaggle Secrets named `NGROK_AUTHTOKEN`, `GITHUB_TOKEN` and optionally `HF_TOKEN`. The GitHub token needs Contents read/write access to this repository. The Hugging Face token enables model-generated answers; without it, a deterministic dataset-grounded briefing is returned.
-3. Install dependencies in a notebook cell:
-   `!pip -q install fastapi uvicorn pyngrok requests pydantic`
-4. Run `%run /kaggle/working/kaggle_worker.py` after uploading the file to the notebook working directory, or paste its contents into a cell.
-5. Copy the HTTPS URL printed by ngrok into `API_BASE` at the top of `app.js`. Commit the updated `app.js`.
+## GitHub Pages
+Enable Pages for `HackathonTeam12341/NasaSpaceAppsFireLedger` on branch `main`, folder `/ (root)`. The app will then be available at:
+`https://hackathonte am12341.github.io/NasaSpaceAppsFireLedger/firefusion-next/`
+(Use the repository's actual Pages URL shown in Settings → Pages.)
 
-The Kaggle cell must remain running. Kaggle sessions are temporary; this is a demo architecture, not a 24/7 production service.
+## Kaggle setup — no .env files
+1. Create one Kaggle notebook.
+2. In Notebook → Add-ons → Secrets, create:
+   - `GITHUB_TOKEN`: token with Contents read/write access to `AriyaMon/NasaSpaceAppsDATABASE_KAGGLE`.
+   - `NGROK_AUTHTOKEN`: your ngrok authentication token.
+   - `HF_TOKEN` (optional): Hugging Face token if you want hosted Mistral inference.
+3. Paste the one-cell launcher supplied in the project instructions. It installs dependencies, reads these secrets, downloads `kaggle_worker.py` from this repository, and runs it.
+4. Copy the HTTPS API URL printed by Kaggle into `API_BASE` at the top of `app.js`, then commit that one-line edit.
+5. Keep the Kaggle notebook running.
 
-## Database design
-The worker creates `firefusion_requests.sqlite` automatically with `requests`, `conversations`, `messages`, and `metadata` tables. It syncs the SQLite file to `firefusion-next/firefusion_requests.sqlite` in GitHub when a request is added or processed, if `GITHUB_TOKEN` is configured. GitHub stores a database file; it is not itself a live SQL server. Run only one worker to avoid concurrent SQLite snapshot overwrites.
+## Database tables
+The worker preserves the existing `requests`, `conversations`, `messages`, `summaries`, and `metadata` tables. It adds `fire_observations` for the incoming fire dataset and map intelligence. The worker creates/upgrades schema without dropping existing records.
 
-## Important dataset limitations
-The current `harmonized_global_cells.json` contains 3,000 spatially aggregated cells. The map visualizes those cells and the worker calculates statistics inside the selected rectangle. The global-cell snapshot does not include per-cell dates, so the date fields are recorded with requests but do not filter the aggregate cell counts. Detection counts are not counts of confirmed separate fires. The briefing explicitly warns users that this dataset is not a live incident feed and must not be used as dispatch or evacuation authority.
-
-## Security
-Never put GitHub, Hugging Face, or ngrok tokens in `app.js` or any committed frontend file. Store them only in Kaggle Secrets. Revoke any token previously pasted into code or chat.
+## Important
+- The supplied data has not yet been loaded. The application will not display invented detections.
+- Fire type must be supplied as a dataset classification or derived from a separately documented land-cover source; the worker does not guess it.
+- FRP (fire radiative power) is not fireline intensity.
+- Population proximity is only as reliable as the population/settlement layer used to populate the optional fields.
+- GitHub stores SQLite snapshots; it is not a transactional hosted SQL service. Run one Kaggle worker only to avoid conflicting writes.
+- Never place GitHub, Hugging Face, or ngrok secrets in frontend JavaScript or committed files. Do not use .env files.
