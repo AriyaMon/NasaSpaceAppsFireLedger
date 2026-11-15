@@ -2,6 +2,6 @@
 // Boots the compiled FireLedger bundle when GitHub Pages serves the raw dev/feature branch.
 const link = document.createElement('link');
 link.rel = 'stylesheet';
-link.href = new URL('./assets/index-DtZmjzXy.css', import.meta.url).href;
+link.href = new URL('./assets/index-BULxW6De.css', import.meta.url).href;
 document.head.appendChild(link);
-import('./assets/index-BLSC5SHS.js');
+import('./assets/index-SY6bVrAF.js');

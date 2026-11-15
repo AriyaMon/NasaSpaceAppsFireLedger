@@ -1,788 +1,388 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import type { StartupSyncStatus } from '../scripts/syncGithubRawDb.ts';
-import { BurningCalendar } from './components/BurningCalendar.tsx';
-import { EarthGlobe3D } from './components/EarthGlobe3D.tsx';
+import { useEffect, useRef, useState } from 'react';
 import {
-  FireTimelineBar,
-  type TimelineGranularity,
-} from './components/FireTimelineBar.tsx';
-import { HarmonizationChart } from './components/HarmonizationChart.tsx';
-import { PipelineMethodologyPanel } from './components/PipelineMethodologyPanel.tsx';
-import { RegionSelector2D } from './components/RegionSelector2D.tsx';
-import { ResponderBriefingPanel } from './components/ResponderBriefingPanel.tsx';
-import { WaitTimeBridgeView } from './components/WaitTimeBridgeView.tsx';
-import {
-  DEFAULT_GITHUB_REPO,
-  downloadCsvExport,
-  downloadGeoJsonExport,
-  fetchAnalyze,
-  fetchDailySlice,
-  fetchGlobeCells,
-  fetchLandsatVerify,
-  fetchMeta,
-  fetchResponderBrief,
-  fetchStartupSyncStatus,
-  fetchWaitTimeBridge,
-  pollGithubInferenceStatus,
-  queueGithubInference,
-  triggerLiveFirms,
-  triggerStartupSync,
-} from './lib/apiClient.ts';
-import { REGION_PRESETS } from './lib/seedData.ts';
-import type {
-  AnalyzeResponse,
-  Bbox,
-  ColorRamp,
-  DailySlicePoint,
-  GlobeCell,
-  HarmonizationMode,
-  LandsatVerificationResult,
-  ResponderBriefResult,
-  ResponderRole,
-  WaitTimeBridgeResult,
-} from './lib/types.ts';
+  dailyCsvPath,
+  FALLBACK_DAILY_CSVS,
+  inCanadaExtent,
+  STUDY_DATES,
+  type HotspotRecord,
+} from './config/dates.ts';
+import { createHotspotLayer, parseHotspotCsv, type HotspotLayerHandle } from './layers/hotspots.ts';
+import { fetchGlobeCells, fetchMeta } from './lib/apiClient.ts';
+import { createMap } from './map/createMap.ts';
 
-type WorkspaceTab = 'overview' | 'calendar' | 'bridge' | 'pipeline';
-
-function getDaysInMonth(ym: string): number {
-  const [yrStr, moStr] = ym.split('-');
-  const yr = Number(yrStr) || 2026;
-  const mo = Number(moStr) || 7;
-  return new Date(yr, mo, 0).getDate();
-}
-
-export default function App() {
-  const initialPreset = REGION_PRESETS[0];
-  const [activeTab, setActiveTab] = useState<WorkspaceTab>('overview');
-  const [spatialSubMode, setSpatialSubMode] = useState<'3d' | '2d'>('3d');
-  const [selectedPresetId, setSelectedPresetId] = useState<string>(initialPreset.id);
-  const [bbox, setBbox] = useState<Bbox>(initialPreset.bbox);
-  const [flyTarget, setFlyTarget] = useState<{ lat: number; lon: number } | null>(
-    initialPreset.center
-  );
-  const [mode, setMode] = useState<HarmonizationMode>('harmonized');
-  const [selectedYm, setSelectedYm] = useState<string>(initialPreset.highlightYm);
-  const [timelineGranularity, setTimelineGranularity] =
-    useState<TimelineGranularity>('month');
-  const [selectedDay, setSelectedDay] = useState<number>(28);
-  const [isSimPlaying, setIsSimPlaying] = useState<boolean>(false);
-  const [simSpeed, setSimSpeed] = useState<1 | 2 | 4>(1);
-  const [colorRamp, setColorRamp] = useState<ColorRamp>('inferno');
-  const [role, setRole] = useState<ResponderRole>('firefighting');
-  const [selectedCellId, setSelectedCellId] = useState<string | null>(null);
-
-  const [analysis, setAnalysis] = useState<AnalyzeResponse | null>(null);
-  const [dailySlice, setDailySlice] = useState<DailySlicePoint[]>([]);
-  const [globeCells, setGlobeCells] = useState<GlobeCell[]>([]);
-  const [bridge, setBridge] = useState<WaitTimeBridgeResult | null>(null);
-  const [brief, setBrief] = useState<ResponderBriefResult | null>(null);
-  const [landsat, setLandsat] = useState<LandsatVerificationResult | null>(null);
-  const [startupSync, setStartupSync] = useState<StartupSyncStatus | null>(null);
-
-  const [loadingAnalysis, setLoadingAnalysis] = useState(false);
-  const [loadingBrief, setLoadingBrief] = useState(false);
-  const [loadingBridge, setLoadingBridge] = useState(false);
-  const [loadingLandsat, setLoadingLandsat] = useState(false);
-  const [fetchingFirms, setFetchingFirms] = useState(false);
-  const [triggeringSync, setTriggeringSync] = useState(false);
-  const [queuingRequest, setQueuingRequest] = useState(false);
-  const [firmsBanner, setFirmsBanner] = useState<string | null>(null);
-  const [githubQueueMessage, setGithubQueueMessage] = useState<string | null>(null);
-  const [pendingRequestId, setPendingRequestId] = useState<string | null>(null);
-
-  const [metaInfo, setMetaInfo] = useState<{
-    firmsConfigured: boolean;
-    localLlmConfigured: boolean;
-    githubRepo: string;
-  }>({
-    firmsConfigured: false,
-    localLlmConfigured: false,
-    githubRepo: DEFAULT_GITHUB_REPO,
+const fmt = (date: string) =>
+  new Date(`${date}T12:00:00Z`).toLocaleDateString('en-CA', {
+    timeZone: 'UTC',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
   });
 
-  const daysInMonth = useMemo(() => getDaysInMonth(selectedYm), [selectedYm]);
+export default function App() {
+  const mapContainerRef = useRef<HTMLDivElement | null>(null);
+  const viewerRef = useRef<ReturnType<typeof createMap> | null>(null);
+  const dayLayersRef = useRef<Map<string, HotspotLayerHandle>>(new Map());
+  const demoRecordsRef = useRef<Map<string, HotspotRecord[]>>(new Map());
+  const harmonizedRecordsRef = useRef<Map<string, HotspotRecord[]>>(new Map());
 
-  useEffect(() => {
-    setSelectedDay((d) => Math.max(1, Math.min(daysInMonth, d)));
-  }, [daysInMonth]);
-
-  useEffect(() => {
-    fetchMeta()
-      .then((d) => {
-        setMetaInfo({
-          firmsConfigured: Boolean(d.firmsConfigured),
-          localLlmConfigured: Boolean(d.localLlmConfigured),
-          githubRepo: d.githubRepo || DEFAULT_GITHUB_REPO,
-        });
-        if (d.startupSync) setStartupSync(d.startupSync);
-      })
-      .catch(() => {});
-
-    const timer = setTimeout(() => {
-      fetchStartupSyncStatus()
-        .then((s) => setStartupSync(s))
-        .catch(() => {});
-    }, 3500);
-    return () => clearTimeout(timer);
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoadingAnalysis(true);
-    fetchAnalyze(bbox, mode)
-      .then((data) => {
-        if (cancelled) return;
-        setAnalysis(data);
-        if (!data.series.some((s) => s.ym === selectedYm)) {
-          setSelectedYm(data.series[data.series.length - 1]?.ym ?? '2026-07');
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingAnalysis(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [bbox, mode]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const dayParam = timelineGranularity === 'day' ? selectedDay : null;
-    fetchGlobeCells(selectedYm, mode, dayParam)
-      .then((d) => {
-        if (!cancelled && Array.isArray(d.cells)) setGlobeCells(d.cells);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedYm, mode, timelineGranularity, selectedDay]);
-
-  useEffect(() => {
-    if (!isSimPlaying || !analysis || analysis.series.length === 0) return;
-
-    const intervalMs =
-      timelineGranularity === 'day'
-        ? Math.round(650 / simSpeed)
-        : Math.round(900 / simSpeed);
-
-    const timer = setInterval(() => {
-      if (timelineGranularity === 'month') {
-        setSelectedYm((curr) => {
-          const idx = analysis.series.findIndex((s) => s.ym === curr);
-          const nextIdx = idx < 0 || idx + 1 >= analysis.series.length ? 0 : idx + 1;
-          return analysis.series[nextIdx]?.ym ?? curr;
-        });
-      } else {
-        setSelectedDay((currDay) => {
-          if (currDay + 1 <= daysInMonth) {
-            return currDay + 1;
-          }
-          const idx = analysis.series.findIndex((s) => s.ym === selectedYm);
-          const nextIdx = idx < 0 || idx + 1 >= analysis.series.length ? 0 : idx + 1;
-          const nextYm = analysis.series[nextIdx]?.ym;
-          if (nextYm && nextYm !== selectedYm) {
-            setSelectedYm(nextYm);
-          }
-          return 1;
-        });
-      }
-    }, intervalMs);
-
-    return () => clearInterval(timer);
-  }, [isSimPlaying, timelineGranularity, simSpeed, analysis, daysInMonth, selectedYm]);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetchDailySlice(bbox, selectedYm, mode)
-      .then((d) => {
-        if (!cancelled && Array.isArray(d.daily)) setDailySlice(d.daily);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [bbox, selectedYm, mode]);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoadingBridge(true);
-    fetchWaitTimeBridge(bbox, selectedYm)
-      .then((d) => {
-        if (!cancelled) setBridge(d);
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingBridge(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [bbox, selectedYm]);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetchLandsatVerify(bbox, selectedYm)
-      .then((d) => {
-        if (!cancelled) setLandsat(d);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [bbox, selectedYm]);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoadingBrief(true);
-    fetchResponderBrief(bbox, selectedYm, mode, role)
-      .then((d) => {
-        if (!cancelled) setBrief(d);
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingBrief(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [bbox, selectedYm, mode, role]);
-
-  const handleSelectPreset = useCallback((presetId: string) => {
-    const found = REGION_PRESETS.find((p) => p.id === presetId);
-    if (!found) return;
-    setSelectedPresetId(found.id);
-    setBbox(found.bbox);
-    setFlyTarget(found.center);
-    setSelectedYm(found.highlightYm);
-    setSelectedCellId(null);
-  }, []);
-
-  const handleJumpLandmark = useCallback(
-    (ym: string, presetId?: string) => {
-      if (presetId) {
-        const found = REGION_PRESETS.find((p) => p.id === presetId);
-        if (found) {
-          setSelectedPresetId(found.id);
-          setBbox(found.bbox);
-          setFlyTarget(found.center);
-          setSelectedCellId(null);
-        }
-      }
-      setSelectedYm(ym);
-    },
-    []
+  const [selectedIndex, setSelectedIndex] = useState<number>(0);
+  const [activeDays, setActiveDays] = useState<Set<string>>(() => new Set([STUDY_DATES[0]]));
+  const [countsByDate, setCountsByDate] = useState<Record<string, string>>(() =>
+    Object.fromEntries(STUDY_DATES.map((d) => [d, 'Awaiting data']))
   );
+  const [coordsText, setCoordsText] = useState<string>('73.13° N  ·  99.84° W');
+  const [zoomText, setZoomText] = useState<string>('ZOOM 1');
+  const [mapReady, setMapReady] = useState<boolean>(true);
+  const [dataSourceMode, setDataSourceMode] = useState<'demo' | 'harmonized'>('demo');
 
-  const handleApplyCustomBbox = useCallback((next: Bbox) => {
-    setSelectedPresetId('custom');
-    setBbox(next);
-    setFlyTarget({
-      lat: (next.south + next.north) / 2,
-      lon: (next.west + next.east) / 2,
-    });
-    setSelectedCellId(null);
-  }, []);
-
-  const handleSelectGlobeCell = useCallback((cell: GlobeCell) => {
-    setSelectedCellId(cell.id);
-    const matchingPreset = REGION_PRESETS.find((p) => p.id === cell.biome);
-    if (matchingPreset) {
-      setSelectedPresetId(matchingPreset.id);
-      setBbox(matchingPreset.bbox);
-      setFlyTarget({ lat: cell.lat, lon: cell.lon });
-    }
-  }, []);
-
-  const handleExportCsv = () => {
-    void downloadCsvExport(bbox, mode);
-  };
-
-  const handleDownloadGeoJson = () => {
-    void downloadGeoJsonExport(bbox, selectedYm);
-  };
-
-  const handleFetchLiveFirms = async () => {
-    setFetchingFirms(true);
-    setFirmsBanner(null);
-    try {
-      const data = await triggerLiveFirms(bbox, 3);
-      if (data.liveFetched && data.countsBySensor) {
-        const counts = Object.entries(data.countsBySensor)
-          .map(([k, v]) => `${k}: ${v}`)
-          .join(' · ');
-        setFirmsBanner(`Live NASA FIRMS NRT synced (${data.days ?? 3}d): ${counts}`);
-      } else {
-        setFirmsBanner(data.message || 'Live FIRMS key not configured; using baseline ledger.');
-      }
-    } catch {
-      setFirmsBanner('Failed to reach /api/fetch-firms.');
-    } finally {
-      setFetchingFirms(false);
-    }
-  };
-
-  const handleRunLiveLandsatCheck = async () => {
-    setLoadingLandsat(true);
-    try {
-      const d = await fetchLandsatVerify(bbox, selectedYm, true);
-      setLandsat(d);
-    } finally {
-      setLoadingLandsat(false);
-    }
-  };
-
-  const handleTriggerStartupSync = async () => {
-    setTriggeringSync(true);
-    try {
-      const d = await triggerStartupSync();
-      setStartupSync(d);
-    } finally {
-      setTriggeringSync(false);
-    }
-  };
-
-  const handleQueueGithubRequest = async () => {
-    setQueuingRequest(true);
-    setGithubQueueMessage(null);
-    try {
-      const d = await queueGithubInference(bbox, selectedYm, mode, role);
-      if (d.ok && d.requestId) {
-        setPendingRequestId(d.requestId);
-        setGithubQueueMessage(
-          `Queued in ${d.sqlitePath ?? 'database/inference_queue.sqlite'} as status="unanswered" (${d.requestId}). Waiting for Kaggle Mistral 7B...`
-        );
-      } else {
-        setGithubQueueMessage(d.message || 'Failed to queue SQL request.');
-      }
-    } catch {
-      setGithubQueueMessage('Network error queuing SQL request to GitHub.');
-    } finally {
-      setQueuingRequest(false);
-    }
-  };
-
+  // Initialize Leaflet map and load the 7 June 2023 daily hotspot layers
   useEffect(() => {
-    if (!pendingRequestId) return;
-    const poll = setInterval(async () => {
-      try {
-        const d = await pollGithubInferenceStatus(pendingRequestId);
-        if (d?.answered && d.answer?.text) {
-          setBrief((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  text: d.answer?.text ?? prev.text,
-                  source: 'local_mistral_7b',
-                  modelName: 'Mistral 7B QLoRA (Kaggle · answered ✓)',
-                  verifiedNumbers: Array.isArray(d.answer?.verifiedNumbers)
-                    ? d.answer.verifiedNumbers
-                    : prev.verifiedNumbers,
-                  rejectedNumbers: Array.isArray(d.answer?.rejectedNumbers)
-                    ? d.answer.rejectedNumbers
-                    : [],
-                }
-              : prev
-          );
-          setGithubQueueMessage(
-            `Answered by Kaggle Mistral 7B QLoRA (status="answered" in SQLite queue).`
-          );
-          setPendingRequestId(null);
-        }
-      } catch {
-        // Keep polling cleanly on transient network blips
-      }
-    }, 5000);
-    return () => clearInterval(poll);
-  }, [pendingRequestId]);
+    const container = mapContainerRef.current;
+    if (!container) return;
 
-  const activePoint = useMemo(() => {
-    if (!analysis || analysis.series.length === 0) return null;
-    return (
-      analysis.series.find((s) => s.ym === selectedYm) ??
-      analysis.series[analysis.series.length - 1]
-    );
-  }, [analysis, selectedYm]);
+    let cancelled = false;
+    try {
+      const viewer = createMap(container, {
+        onViewChange: ({ lat, lng, zoom }) => {
+          setCoordsText(
+            `${Math.abs(lat).toFixed(2)}° ${lat >= 0 ? 'N' : 'S'}  ·  ${Math.abs(lng).toFixed(2)}° ${lng >= 0 ? 'E' : 'W'}`
+          );
+          setZoomText(`ZOOM ${zoom}`);
+        },
+      });
+      viewerRef.current = viewer;
+      setMapReady(true);
+
+      const loadDay = async (date: string, index: number) => {
+        try {
+          let csvText = '';
+          try {
+            const response = await fetch(dailyCsvPath(date));
+            if (response.ok) {
+              const text = await response.text();
+              if (text.includes('longitude,latitude,radius_km')) {
+                csvText = text;
+              }
+            }
+          } catch {
+            // Use embedded fallback CSV when running offline or on custom base path
+          }
+          if (!csvText) {
+            csvText = FALLBACK_DAILY_CSVS[date] || '';
+          }
+
+          const records = parseHotspotCsv(csvText).filter(inCanadaExtent);
+          if (cancelled) return;
+          demoRecordsRef.current.set(date, records);
+
+          const layer = createHotspotLayer(viewer.map, {
+            name: fmt(date),
+            hotspots: records,
+            visible: index === 0,
+          });
+          dayLayersRef.current.set(date, layer);
+          setCountsByDate((prev) => ({
+            ...prev,
+            [date]: `${records.length.toLocaleString('en-CA')} demo`,
+          }));
+        } catch (error) {
+          console.error(`Hotspots for ${date} failed to load:`, error);
+          if (!cancelled) {
+            setCountsByDate((prev) => ({
+              ...prev,
+              [date]: 'Load error',
+            }));
+          }
+        }
+      };
+
+      void Promise.all(STUDY_DATES.map((date, idx) => loadDay(date, idx)));
+
+      // Also warm up FireLedger architecture (backend or static GitHub Pages engine)
+      void fetchMeta().catch(() => null);
+    } catch (error) {
+      console.error('FireFusion map initialization failed:', error);
+      setMapReady(false);
+    }
+
+    return () => {
+      cancelled = true;
+      for (const layer of dayLayersRef.current.values()) {
+        layer.destroy();
+      }
+      dayLayersRef.current.clear();
+      viewerRef.current?.destroy();
+      viewerRef.current = null;
+    };
+  }, []);
+
+  // Sync Leaflet canvas layer visibility whenever activeDays changes
+  useEffect(() => {
+    for (const [date, layer] of dayLayersRef.current.entries()) {
+      layer.setVisible(activeDays.has(date));
+    }
+  }, [activeDays]);
+
+  const selectDay = (index: number) => {
+    const clamped = Math.max(0, Math.min(6, Number(index)));
+    const date = STUDY_DATES[clamped];
+    setSelectedIndex(clamped);
+    setActiveDays(new Set([date]));
+  };
+
+  const toggleDayCheckbox = (date: string, checked: boolean) => {
+    setActiveDays((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(date);
+      else next.delete(date);
+      return next;
+    });
+  };
+
+  // Optional toggle when clicking the top-right badge to switch between the 100 demo points
+  // and FireLedger's harmonized MODIS+VIIRS+Landsat backend/client architecture
+  const handleToggleDataSource = async () => {
+    const nextMode = dataSourceMode === 'demo' ? 'harmonized' : 'demo';
+    setDataSourceMode(nextMode);
+
+    if (nextMode === 'demo') {
+      const nextCounts: Record<string, string> = {};
+      for (const date of STUDY_DATES) {
+        const recs = demoRecordsRef.current.get(date) || [];
+        dayLayersRef.current.get(date)?.setData(recs);
+        nextCounts[date] = `${recs.length.toLocaleString('en-CA')} demo`;
+      }
+      setCountsByDate(nextCounts);
+      return;
+    }
+
+    // Load or use cached FireLedger harmonized Canadian cells for June 1–7, 2023
+    const nextCounts: Record<string, string> = {};
+    for (const [idx, date] of STUDY_DATES.entries()) {
+      let recs = harmonizedRecordsRef.current.get(date);
+      if (!recs) {
+        const res = await fetchGlobeCells('2023-06', 'harmonized', idx + 1);
+        const canadian = res.cells
+          .filter((c) => c.lat >= 41.5 && c.lat <= 84 && c.lon >= -141.5 && c.lon <= -52)
+          .map((c) => ({
+            longitude: c.lon,
+            latitude: c.lat,
+            radius_km: Math.max(45, Math.min(145, 35 + Math.sqrt(c.harmonizedCount) * 8)),
+          }));
+        recs = canadian.length > 0 ? canadian : demoRecordsRef.current.get(date) || [];
+        harmonizedRecordsRef.current.set(date, recs);
+      }
+      dayLayersRef.current.get(date)?.setData(recs);
+      nextCounts[date] = `${recs.length.toLocaleString('en-CA')} harmonized`;
+    }
+    setCountsByDate(nextCounts);
+  };
+
+  const selectedDate = STUDY_DATES[selectedIndex];
 
   return (
-    <div className="min-h-screen bg-[#090a0d] text-[#f3f1ec]">
-      {/* Top Bar Contract: 3 zones (Wordmark | 4 Nav Links | 1 Primary Action) */}
-      <header className="sticky top-0 z-30 border-b border-white/[0.08] bg-[#090a0d]/95 px-4 backdrop-blur sm:px-8">
-        <div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-x-6 gap-y-1 py-2 sm:h-15 sm:flex-nowrap sm:py-0">
-          <div className="flex shrink-0 items-baseline gap-3 whitespace-nowrap">
-            <span className="font-editorial text-xl font-medium tracking-tight text-[#f3f1ec]">
-              FireLedger
-            </span>
-            <span className="hidden font-mono text-[11px] text-[#73706a] md:inline">
-              MODIS · VIIRS · Landsat
-            </span>
-          </div>
+    <main className="workspace" aria-label="FireFusion Canada wildfire map">
+      <div
+        id="map"
+        ref={mapContainerRef}
+        className="map"
+        aria-label="Interactive map constrained to Canada"
+        role="application"
+      />
 
-          <button
-            type="button"
-            onClick={handleExportCsv}
-            className="shrink-0 whitespace-nowrap rounded border border-white/20 bg-[#101216] px-3.5 py-1.5 font-mono text-xs font-medium text-[#f3f1ec] transition-colors hover:border-[#e5a93c] sm:order-3"
-          >
-            Export CSV
-          </button>
-
-          <nav className="order-3 flex w-full items-center gap-5 overflow-x-auto border-t border-white/[0.06] pt-1 sm:order-2 sm:w-auto sm:gap-7 sm:border-t-0 sm:pt-0">
-            {(
-              [
-                ['overview', 'Observatory'],
-                ['calendar', 'Burning Calendar'],
-                ['bridge', 'Wait-Time Bridge'],
-                ['pipeline', 'Harmonization Pipeline'],
-              ] as Array<[WorkspaceTab, string]>
-            ).map(([tabId, label]) => {
-              const active = activeTab === tabId;
-              return (
-                <button
-                  key={tabId}
-                  type="button"
-                  onClick={() => setActiveTab(tabId)}
-                  className={`relative shrink-0 whitespace-nowrap py-2.5 text-xs font-medium transition-colors sm:py-4 ${
-                    active ? 'text-[#f3f1ec]' : 'text-[#a19d94] hover:text-[#f3f1ec]'
-                  }`}
-                >
-                  {label}
-                  {active && (
-                    <span className="absolute inset-x-0 bottom-0 h-[1.5px] bg-[#e5a93c]" />
-                  )}
-                </button>
-              );
-            })}
-          </nav>
+      <header className="topbar">
+        <a className="brand" href="./" aria-label="FireFusion home">
+          <span className="brand-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
+              <path
+                d="M13.4 2.5c.5 4.4-3.4 5.9-2.4 9.2-2-1-2.6-3.1-2.5-4.6C5.5 10.2 4 12.9 4 16a8 8 0 0 0 16 0c0-5-3.7-8.6-6.6-13.5Z"
+                fill="currentColor"
+              />
+              <path
+                d="M12.7 11c-.1 2.5-3.4 3.6-3.4 6A3.2 3.2 0 0 0 15.7 17c0-2.4-1.2-4.2-3-6Z"
+                fill="#101b24"
+              />
+            </svg>
+          </span>
+          <span>
+            Fire<span className="brand-accent">Fusion</span>
+          </span>
+        </a>
+        <div className="topbar-separator" aria-hidden="true" />
+        <div className="topbar-label">
+          Canada <span className="topbar-label-muted">/ Fire Explorer</span>
         </div>
+        <button
+          type="button"
+          className="prototype-tag"
+          onClick={handleToggleDataSource}
+          title="Click to toggle between Demo CSV data and FireLedger Harmonized MODIS/VIIRS data"
+        >
+          {dataSourceMode === 'demo'
+            ? 'DEMO DATA · JUNE 1–7, 2023'
+            : 'HARMONIZED DATA · JUNE 1–7, 2023'}
+        </button>
       </header>
 
-      {/* Refined Control Strip */}
-      <section className="border-b border-white/[0.08] bg-[#090a0d] px-5 py-3 sm:px-8">
-        <div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-4">
-          <div className="flex flex-wrap items-center gap-4">
-            <label className="flex items-center gap-2 text-xs">
-              <span className="text-[#73706a]">Sector</span>
-              <select
-                value={selectedPresetId}
-                onChange={(e) => handleSelectPreset(e.target.value)}
-                className="rounded border border-white/15 bg-[#101216] px-2.5 py-1 text-xs text-[#f3f1ec] focus:border-[#e5a93c] focus:outline-none"
-              >
-                {REGION_PRESETS.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.shortLabel}
-                  </option>
-                ))}
-                {selectedPresetId === 'custom' && <option value="custom">Custom AOI</option>}
-              </select>
-            </label>
-
-            <div className="flex items-center gap-1 rounded border border-white/10 bg-[#101216] p-0.5 text-xs">
-              {(
-                [
-                  ['harmonized', 'AI-Harmonized (26 yr)'],
-                  ['raw', 'Raw Unharmonized'],
-                  ['dual_2012', '2012+ Overlap'],
-                ] as Array<[HarmonizationMode, string]>
-              ).map(([m, label]) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => setMode(m)}
-                  className={`rounded px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                    mode === m
-                      ? m === 'raw'
-                        ? 'bg-[#e05a2b]/25 text-[#f7b199]'
-                        : 'bg-white/12 text-[#f3f1ec]'
-                      : 'text-[#a19d94] hover:text-[#f3f1ec]'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-
-            <label className="flex items-center gap-2 text-xs">
-              <span className="text-[#73706a]">Month</span>
-              <input
-                type="month"
-                min="2000-11"
-                max="2026-10"
-                value={selectedYm}
-                onChange={(e) => e.target.value && setSelectedYm(e.target.value)}
-                className="rounded border border-white/15 bg-[#101216] px-2 py-0.5 font-mono text-xs text-[#f3f1ec]"
-              />
-            </label>
-          </div>
-
-          <div className="flex items-center gap-3">
-            {startupSync && (
-              <span className="hidden font-mono text-[11px] text-[#73706a] xl:inline">
-                DB: {startupSync.rawModisRowCount.toLocaleString()} MODIS ·{' '}
-                {startupSync.rawViirsRowCount.toLocaleString()} VIIRS
-              </span>
-            )}
-            <button
-              type="button"
-              disabled={fetchingFirms}
-              onClick={handleFetchLiveFirms}
-              className="rounded border border-white/15 bg-[#101216] px-3 py-1 text-xs font-medium text-[#c9c5bc] transition-colors hover:border-sky-400 hover:text-[#f3f1ec] disabled:opacity-50"
-            >
-              {fetchingFirms ? 'Querying NASA FIRMS...' : 'Query Live FIRMS'}
-            </button>
-          </div>
+      <section className="intro-panel" aria-label="Map information">
+        <div className="eyebrow">
+          <span className="live-dot" /> HISTORICAL WILDFIRE VIEWER
         </div>
-
-        {firmsBanner && (
-          <div className="mx-auto mt-2 max-w-[1440px] border-l-2 border-sky-400 pl-3 font-mono text-[11px] text-sky-200">
-            {firmsBanner}
-          </div>
-        )}
+        <h1>Canada Wildfire Map</h1>
+        <p>
+          {dataSourceMode === 'demo'
+            ? 'Explore 100 synthetic demo hotspots across June 1–7, 2023. These are not real satellite detections.'
+            : 'Explore harmonized 375 m VIIRS-equivalent Canadian hotspots across June 1–7, 2023 from the FireLedger engine.'}
+        </p>
+        <div className="panel-divider" />
+        <div className="panel-foot">
+          <span className="panel-icon" aria-hidden="true">
+            ▧
+          </span>{' '}
+          OpenStreetMap base layer
+        </div>
       </section>
 
-      {/* Main Editorial Observatory Workspace */}
-      <main className="mx-auto flex max-w-[1440px] flex-col gap-8 px-5 py-6 sm:px-8">
-        {/* Flat Hairline-Divided Telemetry Strip */}
-        {analysis && activePoint && (
-          <section className="grid grid-cols-1 divide-y divide-white/[0.08] border-b border-white/[0.08] pb-5 sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-4">
-            <div className="py-2.5 sm:py-1 sm:pr-4">
-              <div className="text-xs text-[#73706a]">
-                {mode === 'raw' ? 'Raw Detections' : 'Harmonized VIIRS-Equivalent'} ·{' '}
-                <span className="font-mono">{activePoint.ym}</span>
-              </div>
-              <div className="mt-1 flex items-baseline gap-2 font-mono tabular-nums">
-                <span className="text-2xl font-medium text-[#f3f1ec]">
-                  {activePoint.harmonizedCount.toLocaleString()}
-                </span>
-                <span className="text-xs text-[#a19d94]">
-                  {activePoint.source === 'modis_translated'
-                    ? 'MODIS → VIIRS'
-                    : activePoint.source === 'modis_raw'
-                      ? 'MODIS 1 km raw'
-                      : 'VIIRS 375 m'}
-                </span>
-              </div>
-              <div className="mt-0.5 truncate text-xs text-[#a19d94]">{analysis.regionName}</div>
-            </div>
-
-            <div className="py-2.5 sm:px-4 sm:py-1">
-              <div className="text-xs text-sky-300">90% Conformal &amp; Landsat 8/9 CI</div>
-              <div className="mt-1 font-mono tabular-nums text-xl font-medium text-[#f3f1ec]">
-                {activePoint.landsatLo.toLocaleString()}–{activePoint.landsatHi.toLocaleString()}
-              </div>
-              <div className="mt-0.5 font-mono tabular-nums text-[11px] text-[#a19d94]">
-                OOF 90% CI: {activePoint.lo90.toLocaleString()}–{activePoint.hi90.toLocaleString()} ·{' '}
-                {activePoint.landsatCoincidencePct}% 30 m match
-              </div>
-            </div>
-
-            <div className="py-2.5 sm:px-4 sm:py-1">
-              <div className="text-xs text-[#73706a]">26-Year Anomaly Departure</div>
-              <div className="mt-1 flex items-baseline gap-2 font-mono tabular-nums">
-                <span
-                  className={`text-2xl font-medium ${
-                    activePoint.anomaly === 'high'
-                      ? 'text-[#e05a2b]'
-                      : activePoint.anomaly === 'medium'
-                        ? 'text-[#e5a93c]'
-                        : 'text-emerald-400'
-                  }`}
-                >
-                  {activePoint.pctOfMedian}%
-                </span>
-                <span className="text-xs text-[#a19d94]">
-                  of median ({activePoint.medianSameMonth.toLocaleString()})
-                </span>
-              </div>
-              <div className="mt-0.5 font-mono tabular-nums text-[11px] text-[#a19d94]">
-                Z = {activePoint.zScore} · {activePoint.percentile}th pct ·{' '}
-                {activePoint.frpTotalMw.toLocaleString()} MW
-              </div>
-            </div>
-
-            <div className="py-2.5 sm:py-1 sm:pl-4">
-              <div className="text-xs text-[#73706a]">Multi-Sensor Accounting (2000–2026)</div>
-              <div className="mt-1 font-mono tabular-nums text-lg font-medium text-[#f3f1ec]">
-                {analysis.accounting.totalHarmonizedViirsEq.toLocaleString()} VIIRS-Eq
-              </div>
-              <div className="mt-0.5 font-mono tabular-nums text-[11px] text-[#a19d94]">
-                Non-veg dropped: {analysis.accounting.totalModisNonVegFiltered.toLocaleString()} ·
-                VIIRS deduped: {analysis.accounting.totalViirsMultiSatRemoved.toLocaleString()}
-              </div>
-            </div>
-          </section>
-        )}
-
-        {/* Active View Switcher */}
-        {activeTab === 'overview' && (
-          <>
-            {analysis && (
-              <FireTimelineBar
-                series={analysis.series}
-                selectedYm={selectedYm}
-                onSelectYm={setSelectedYm}
-                granularity={timelineGranularity}
-                onChangeGranularity={setTimelineGranularity}
-                selectedDay={selectedDay}
-                daysInMonth={daysInMonth}
-                onSelectDay={setSelectedDay}
-                isPlaying={isSimPlaying}
-                onTogglePlay={() => setIsSimPlaying((p) => !p)}
-                speed={simSpeed}
-                onChangeSpeed={setSimSpeed}
-                mode={mode}
-                globeCells={globeCells}
-                onJumpLandmark={handleJumpLandmark}
+      <section className="layer-panel" aria-label="Map data layers">
+        <div className="layer-panel-heading">DAILY HOTSPOT LAYERS</div>
+        <div id="daily-layers" className="daily-layers">
+          {STUDY_DATES.map((date, index) => (
+            <label key={date} className="hotspot-layer-label daily-layer-label">
+              <input
+                type="checkbox"
+                id={`layer-${date}`}
+                checked={activeDays.has(date)}
+                onChange={(e) => toggleDayCheckbox(date, e.target.checked)}
               />
-            )}
+              <span className="hotspot-swatch" aria-hidden="true" />
+              <span>{`June ${index + 1}`}</span>
+              <span id={`count-${date}`} className="hotspot-count">
+                {countsByDate[date] ?? 'Awaiting data'}
+              </span>
+            </label>
+          ))}
+        </div>
+        <p className="layer-note">
+          {dataSourceMode === 'demo'
+            ? 'Demo data only · 100 illustrative points across seven dates. Replace daily CSVs with real satellite observations when available.'
+            : 'FireLedger MODIS + VIIRS + Landsat harmonized observations across seven dates. Click the top-right badge to return to Demo data.'}
+        </p>
+      </section>
 
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-              {/* Primary 60%+ Satellite 3D Globe Stage */}
-              <div className="flex flex-col gap-3 lg:col-span-7">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-xs">
-                    <button
-                      type="button"
-                      onClick={() => setSpatialSubMode('3d')}
-                      className={`rounded border px-2.5 py-1 font-medium transition-colors ${
-                        spatialSubMode === '3d'
-                          ? 'border-[#e5a93c]/60 bg-[#e5a93c]/15 text-[#f7d083]'
-                          : 'border-white/10 text-[#a19d94] hover:text-[#f3f1ec]'
-                      }`}
-                    >
-                      Satellite 3D Earth
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSpatialSubMode('2d')}
-                      className={`rounded border px-2.5 py-1 font-medium transition-colors ${
-                        spatialSubMode === '2d'
-                          ? 'border-[#e5a93c]/60 bg-[#e5a93c]/15 text-[#f7d083]'
-                          : 'border-white/10 text-[#a19d94] hover:text-[#f3f1ec]'
-                      }`}
-                    >
-                      2D BBox Selector
-                    </button>
-                  </div>
-                  <span className="font-mono text-[11px] text-[#73706a]">
-                    {loadingAnalysis
-                      ? 'Recalibrating ledger...'
-                      : 'Drag to orbit · Scroll to inspect terrain · Click hotspot'}
-                  </span>
-                </div>
-
-                <div className="h-[465px]">
-                  {spatialSubMode === '3d' ? (
-                    <EarthGlobe3D
-                      cells={globeCells}
-                      selectedBbox={bbox}
-                      flyTarget={flyTarget}
-                      selectedCellId={selectedCellId}
-                      onSelectCell={handleSelectGlobeCell}
-                      perimeterGeoJson={bridge?.perimeterGeoJson ?? null}
-                      activeYm={selectedYm}
-                      activeDay={timelineGranularity === 'day' ? selectedDay : null}
-                      regionName={analysis?.regionName ?? initialPreset.name}
-                    />
-                  ) : (
-                    <RegionSelector2D
-                      bbox={bbox}
-                      cells={globeCells}
-                      onApplyBbox={handleApplyCustomBbox}
-                    />
-                  )}
-                </div>
-              </div>
-
-              {/* Right-Hand Editorial Operational Briefing Rail */}
-              <div className="lg:col-span-5">
-                <ResponderBriefingPanel
-                  role={role}
-                  onSelectRole={setRole}
-                  brief={brief}
-                  loading={loadingBrief}
-                  localLlmConfigured={metaInfo.localLlmConfigured}
-                  onQueueKaggleRequest={handleQueueGithubRequest}
-                  queuingKaggleRequest={queuingRequest}
-                  kaggleQueueMessage={githubQueueMessage}
-                />
-              </div>
-            </div>
-
-            {analysis && (
-              <HarmonizationChart
-                series={analysis.series}
-                mode={mode}
-                metrics={analysis.metrics}
-                selectedYm={selectedYm}
-                onSelectYm={setSelectedYm}
-              />
-            )}
-          </>
-        )}
-
-        {activeTab === 'calendar' && analysis && (
-          <div className="grid grid-cols-1 gap-8 xl:grid-cols-12">
-            <div className="xl:col-span-8">
-              <BurningCalendar
-                series={analysis.series}
-                selectedYm={selectedYm}
-                onSelectYm={setSelectedYm}
-                colorRamp={colorRamp}
-                onChangeRamp={setColorRamp}
-                dailySlice={dailySlice}
-                regionName={analysis.regionName}
-              />
-            </div>
-            <div className="xl:col-span-4">
-              <ResponderBriefingPanel
-                role={role}
-                onSelectRole={setRole}
-                brief={brief}
-                loading={loadingBrief}
-                localLlmConfigured={metaInfo.localLlmConfigured}
-                onQueueKaggleRequest={handleQueueGithubRequest}
-                queuingKaggleRequest={queuingRequest}
-                kaggleQueueMessage={githubQueueMessage}
-              />
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'bridge' && (
-          <div className="flex flex-col gap-8">
-            <WaitTimeBridgeView
-              bridge={bridge}
-              loading={loadingBridge}
-              onDownloadGeoJson={handleDownloadGeoJson}
-            />
-            <ResponderBriefingPanel
-              role={role}
-              onSelectRole={setRole}
-              brief={brief}
-              loading={loadingBrief}
-              localLlmConfigured={metaInfo.localLlmConfigured}
-              onQueueKaggleRequest={handleQueueGithubRequest}
-              queuingKaggleRequest={queuingRequest}
-              kaggleQueueMessage={githubQueueMessage}
-            />
-          </div>
-        )}
-
-        {activeTab === 'pipeline' && (
-          <PipelineMethodologyPanel
-            landsat={landsat}
-            loadingLandsat={loadingLandsat}
-            onRunLiveLandsatCheck={handleRunLiveLandsatCheck}
-            startupSync={startupSync}
-            triggeringSync={triggeringSync}
-            onTriggerStartupSync={handleTriggerStartupSync}
-            githubRepo={metaInfo.githubRepo}
-            firmsConfigured={metaInfo.firmsConfigured}
-            localLlmConfigured={metaInfo.localLlmConfigured}
-            onQueueGithubRequest={handleQueueGithubRequest}
-            queuingRequest={queuingRequest}
-            githubQueueMessage={githubQueueMessage}
+      <section className="timeline-panel" aria-label="Daily hotspot timeline">
+        <div className="timeline-heading">
+          <span className="layer-panel-heading">TIMELINE · JUNE 2023</span>
+          <strong id="selected-day">{fmt(selectedDate)}</strong>
+        </div>
+        <div className="timeline-controls">
+          <button
+            id="day-prev"
+            type="button"
+            aria-label="Previous day"
+            disabled={selectedIndex === 0}
+            onClick={() => selectDay(selectedIndex - 1)}
+          >
+            ◀
+          </button>
+          <input
+            id="day-slider"
+            type="range"
+            min={0}
+            max={6}
+            step={1}
+            value={selectedIndex}
+            aria-label="Select day, June 1 to June 7, 2023"
+            onChange={(e) => selectDay(Number(e.target.value))}
           />
-        )}
-      </main>
-    </div>
+          <button
+            id="day-next"
+            type="button"
+            aria-label="Next day"
+            disabled={selectedIndex === 6}
+            onClick={() => selectDay(selectedIndex + 1)}
+          >
+            ▶
+          </button>
+        </div>
+        <div className="timeline-days" id="timeline-days">
+          {STUDY_DATES.map((date, index) => {
+            const isSelected = selectedIndex === index;
+            return (
+              <button
+                key={date}
+                type="button"
+                data-date={date}
+                className={isSelected ? 'active' : ''}
+                aria-label={fmt(date)}
+                aria-pressed={isSelected}
+                onClick={() => selectDay(index)}
+              >
+                {index + 1}
+              </button>
+            );
+          })}
+        </div>
+        <p className="timeline-help">
+          Choose a day to isolate it. Use the layer checkboxes to compare multiple days.
+        </p>
+      </section>
+
+      <nav className="map-tools" aria-label="Map controls">
+        <button
+          type="button"
+          className="tool-button"
+          id="zoom-in"
+          title="Zoom in"
+          aria-label="Zoom in"
+          onClick={() => viewerRef.current?.zoomIn()}
+        >
+          +
+        </button>
+        <button
+          type="button"
+          className="tool-button"
+          id="zoom-out"
+          title="Zoom out"
+          aria-label="Zoom out"
+          onClick={() => viewerRef.current?.zoomOut()}
+        >
+          −
+        </button>
+        <div className="tools-rule" />
+        <button
+          type="button"
+          className="tool-button home-button"
+          id="reset-view"
+          title="Reset to Canada"
+          aria-label="Reset view"
+          onClick={() => viewerRef.current?.resetView()}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="m3 10 9-7 9 7" />
+            <path d="M5 9v11h14V9" />
+            <path d="M9 20v-7h6v7" />
+          </svg>
+        </button>
+      </nav>
+
+      <footer className="statusbar" aria-label="Map status">
+        <span className="status-title">
+          <span className="status-dot" /> {mapReady ? 'MAP READY' : 'MAP UNAVAILABLE'}
+        </span>
+        <span className="status-separator" />
+        <span id="coordinates">{coordsText}</span>
+        <span className="status-separator" />
+        <span id="zoom-level">{zoomText}</span>
+        <span className="status-hint">Scroll to zoom · Drag within Canadian extent</span>
+      </footer>
+    </main>
   );
 }

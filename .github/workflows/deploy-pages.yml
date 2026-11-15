@@ -6,6 +6,7 @@ on:
       - dev
       - main
       - ryan_dev
+      - dev_ui_draft
     paths-ignore:
       - 'assets/**'
       - 'pages-loader.js'

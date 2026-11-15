@@ -1500,11 +1500,14 @@ def serve_spa(path: str):
         dist_target = DIST_DIR / path
         if dist_target.exists() and dist_target.is_file():
             return send_from_directory(DIST_DIR, path)
-        # Fallback to root prebuilt GitHub Pages assets (./assets/*, ./pages-loader.js, ./404.html)
-        if path == "pages-loader.js" or path.startswith("assets/"):
+        # Fallback to root prebuilt GitHub Pages assets (./assets/*, ./pages-loader.js, ./data/*, ./404.html)
+        if path == "pages-loader.js" or path.startswith("assets/") or path.startswith("data/"):
             root_target = BASE_DIR / path
             if root_target.exists() and root_target.is_file():
                 return send_from_directory(BASE_DIR, path)
+            pub_target = BASE_DIR / "public" / path
+            if pub_target.exists() and pub_target.is_file():
+                return send_from_directory(BASE_DIR / "public", path)
 
     if (DIST_DIR / "index.html").exists():
         return send_from_directory(DIST_DIR, "index.html")

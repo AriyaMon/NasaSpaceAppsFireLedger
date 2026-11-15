@@ -1,0 +1,128 @@
+{
+  "window": [
+    "2023-06-01",
+    "2023-06-07"
+  ],
+  "classification": [
+    "vegetation",
+    "offshore",
+    "volcano",
+    "other"
+  ],
+  "filter": "Canada geographic bounding box, includes some nearby countries/offshore areas",
+  "counts": {
+    "2023-06-01/vegetation": {
+      "original": 30495,
+      "canada_extent": 17826
+    },
+    "2023-06-01/offshore": {
+      "original": 398,
+      "canada_extent": 229
+    },
+    "2023-06-01/volcano": {
+      "original": 2349,
+      "canada_extent": 389
+    },
+    "2023-06-01/other": {
+      "original": 38,
+      "canada_extent": 0
+    },
+    "2023-06-02/vegetation": {
+      "original": 50591,
+      "canada_extent": 36513
+    },
+    "2023-06-02/offshore": {
+      "original": 436,
+      "canada_extent": 315
+    },
+    "2023-06-02/volcano": {
+      "original": 2207,
+      "canada_extent": 358
+    },
+    "2023-06-02/other": {
+      "original": 21,
+      "canada_extent": 0
+    },
+    "2023-06-03/vegetation": {
+      "original": 75101,
+      "canada_extent": 59346
+    },
+    "2023-06-03/offshore": {
+      "original": 623,
+      "canada_extent": 464
+    },
+    "2023-06-03/volcano": {
+      "original": 2132,
+      "canada_extent": 367
+    },
+    "2023-06-03/other": {
+      "original": 35,
+      "canada_extent": 0
+    },
+    "2023-06-04/vegetation": {
+      "original": 42961,
+      "canada_extent": 30149
+    },
+    "2023-06-04/offshore": {
+      "original": 554,
+      "canada_extent": 403
+    },
+    "2023-06-04/volcano": {
+      "original": 2132,
+      "canada_extent": 451
+    },
+    "2023-06-04/other": {
+      "original": 49,
+      "canada_extent": 0
+    },
+    "2023-06-05/vegetation": {
+      "original": 31372,
+      "canada_extent": 19809
+    },
+    "2023-06-05/offshore": {
+      "original": 451,
+      "canada_extent": 355
+    },
+    "2023-06-05/volcano": {
+      "original": 1828,
+      "canada_extent": 338
+    },
+    "2023-06-05/other": {
+      "original": 44,
+      "canada_extent": 0
+    },
+    "2023-06-06/vegetation": {
+      "original": 44067,
+      "canada_extent": 32245
+    },
+    "2023-06-06/offshore": {
+      "original": 669,
+      "canada_extent": 541
+    },
+    "2023-06-06/volcano": {
+      "original": 1875,
+      "canada_extent": 304
+    },
+    "2023-06-06/other": {
+      "original": 25,
+      "canada_extent": 0
+    },
+    "2023-06-07/vegetation": {
+      "original": 38499,
+      "canada_extent": 25808
+    },
+    "2023-06-07/offshore": {
+      "original": 673,
+      "canada_extent": 587
+    },
+    "2023-06-07/volcano": {
+      "original": 2080,
+      "canada_extent": 376
+    },
+    "2023-06-07/other": {
+      "original": 14,
+      "canada_extent": 0
+    }
+  },
+  "total": 227173
+}
