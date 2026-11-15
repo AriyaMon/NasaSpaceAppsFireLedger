@@ -43,6 +43,16 @@ jobs:
           VITE_BASE_PATH: /APPS/
         run: npm run build
 
+      - name: Validate compiled asset paths
+        run: |
+          test -f dist/index.html
+          test -d dist/assets
+          if grep -q 'src/main.tsx' dist/index.html; then
+            echo 'Error: uncompiled Vite HTML' >&2
+            exit 1
+          fi
+          echo 'Compiled Vite assets verified'
+
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
