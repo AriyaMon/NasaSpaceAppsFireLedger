@@ -1,4 +1,18 @@
-flask>=3.0.0
-python-dotenv>=1.0.1
-requests>=2.32.0
-gunicorn>=23.0.0
+# FireLedger — Lightweight Python Web & API Runtime Dependencies
+# Compatible with Python 3.10–3.13 on Linux (Alpine/Debian/Ubuntu), macOS, and Windows.
+# Pure-Python wheels only (zero C/C++ compiler toolchain required, fast Alpine Docker builds).
+#
+# Quickstart (One Command — creates .venv, installs packages, and starts localhost:3000):
+#   python3 scripts/setup_pyenv.py
+#
+# Manual Virtualenv Setup:
+#   python3 -m venv .venv
+#   source .venv/bin/activate      # Windows: .venv\Scripts\activate
+#   pip install -r requirements.txt
+#   python app.py
+
+flask>=3.0.0,<4.0.0
+gunicorn>=23.0.0,<24.0.0
+waitress>=3.0.0,<4.0.0
+python-dotenv>=1.0.1,<2.0.0
+requests>=2.32.0,<3.0.0

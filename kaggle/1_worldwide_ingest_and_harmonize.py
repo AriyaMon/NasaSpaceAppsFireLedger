@@ -21,7 +21,7 @@ What this script does end-to-end:
 Required Kaggle Secrets / Environment Variables:
 - FIRMS_MAP_KEY : Your NASA FIRMS API key
 - GITHUB_TOKEN  : Fine-grained GitHub PAT with Contents: Read & Write
-- GITHUB_REPO   : e.g. "[REDACTED]"
+- GITHUB_REPO   : e.g. "HackathonTeam12341/NasaSpaceAppsFireLedger"
 """
 
 import io
@@ -64,12 +64,12 @@ def normalize_github_repo(raw: str) -> str:
     s = re.sub(r"^https?://github\.com/", "", s, flags=re.IGNORECASE)
     s = re.sub(r"/(tree|blob)/.*$", "", s)
     s = re.sub(r"\.git$", "", s, flags=re.IGNORECASE)
-    return s.strip("/") or "[REDACTED]"
+    return s.strip("/") or "HackathonTeam12341/NasaSpaceAppsFireLedger"
 
 
 FIRMS_MAP_KEY = _get_secret("FIRMS_MAP_KEY")
 GITHUB_TOKEN = _get_secret("GITHUB_TOKEN")
-GITHUB_REPO = normalize_github_repo(_get_secret("GITHUB_REPO", "[REDACTED]"))
+GITHUB_REPO = normalize_github_repo(_get_secret("GITHUB_REPO", "HackathonTeam12341/NasaSpaceAppsFireLedger"))
 
 WORK_DIR = Path("./fireledger_build")
 WORK_DIR.mkdir(parents=True, exist_ok=True)

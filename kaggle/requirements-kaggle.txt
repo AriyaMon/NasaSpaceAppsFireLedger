@@ -1,0 +1,16 @@
+# FireLedger — Optional Offline Kaggle Notebook / ML Training Dependencies
+# Only needed when running kaggle/1_worldwide_ingest_and_harmonize.py or
+# kaggle/2_finetune_mistral7b_responders.py locally or in a Kaggle GPU Notebook.
+# Kept separate from root requirements.txt so the web app and Alpine Docker image stay lightweight.
+
+numpy>=1.26.0
+pandas>=2.2.0
+pyarrow>=15.0.0
+scikit-learn>=1.4.0
+torch>=2.2.0
+transformers>=4.40.0
+peft>=0.10.0
+accelerate>=0.29.0
+bitsandbytes>=0.43.0
+datasets>=2.18.0
+requests>=2.32.0

@@ -8,7 +8,7 @@ What this script does:
    - firefighting, police, ambulance, scientist, land_manager
 2. Fine-tunes `mistralai/Mistral-7B-Instruct-v0.3` in 4-bit QLoRA using PEFT + Transformers Trainer.
 3. Runs a continuous GitHub Request-Response Polling Worker:
-   - Constantly polls `requests/` in your GitHub repo (`[REDACTED]`)
+   - Constantly polls `requests/` in your GitHub repo (`HackathonTeam12341/NasaSpaceAppsFireLedger`)
    - Detects any `<request_id>.json` that does NOT yet have a matching `responses/<request_id>.json`
    - Generates a role-specific briefing using your fine-tuned Mistral 7B QLoRA model
    - Verifies all numbers against the request's Fact Ledger to prevent hallucinations
@@ -75,7 +75,7 @@ def normalize_github_repo(raw: Optional[str]) -> str:
     s = re.sub(r"^https?://github\.com/", "", s, flags=re.IGNORECASE)
     s = re.sub(r"/(tree|blob)/.*$", "", s)
     s = re.sub(r"\.git$", "", s, flags=re.IGNORECASE)
-    return s.strip("/") or "[REDACTED]"
+    return s.strip("/") or "HackathonTeam12341/NasaSpaceAppsFireLedger"
 
 
 HF_TOKEN = _get_secret("HF_TOKEN")
@@ -85,7 +85,7 @@ BASE_MODEL = os.environ.get(
 ).strip()
 OUTPUT_DIR = Path("./fireledger-mistral-7b-qlora")
 GITHUB_TOKEN = _get_secret("GITHUB_TOKEN") or ""
-GITHUB_REPO = normalize_github_repo(_get_secret("GITHUB_REPO") or "[REDACTED]")
+GITHUB_REPO = normalize_github_repo(_get_secret("GITHUB_REPO") or "HackathonTeam12341/NasaSpaceAppsFireLedger")
 POLL_INTERVAL_SECONDS = float(os.environ.get("POLL_INTERVAL_SECONDS", "8"))
 
 ROLES = {

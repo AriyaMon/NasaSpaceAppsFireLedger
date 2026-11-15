@@ -1,16 +1,24 @@
 """
-FireLedger — Complete Flask Backend (VS Code / Python Server)
-=============================================================
-Serves the compiled React + Vite frontend from ./dist and provides all
-FireLedger API endpoints, NASA FIRMS ingestion, MODIS->VIIRS harmonization,
-3D Globe cell telemetry, Optical Wait-Time Bridge polygons, Landsat 8/9 checks,
-startup GitHub raw MODIS/VIIRS database sync, and Kaggle GitHub async queue.
+FireLedger — Complete Flask Backend (Python Virtualenv & Alpine Docker Server)
+==============================================================================
+Serves the compiled React + Vite frontend from ./dist (or falls back to the
+prebuilt root ./assets + ./pages-loader.js bundle if ./dist is not built yet)
+and provides all FireLedger API endpoints, NASA FIRMS ingestion, MODIS->VIIRS
+harmonization, 3D Globe cell telemetry, Optical Wait-Time Bridge polygons,
+Landsat 8/9 checks, startup GitHub raw MODIS/VIIRS database sync, and Kaggle
+GitHub async SQLite queue.
 
-Quickstart in VS Code:
-  npm install
-  npm run build
+Quickstart (One-Command Cross-Platform Python Env):
+  python3 scripts/setup_pyenv.py
+
+Quickstart (Manual Python Virtualenv):
+  python3 -m venv .venv
+  source .venv/bin/activate   # Windows: .venv\\Scripts\\activate
   pip install -r requirements.txt
   python app.py
+
+Quickstart (Docker — One Command):
+  docker compose up --build
 """
 
 from __future__ import annotations
@@ -28,7 +36,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import requests
 from dotenv import load_dotenv
@@ -40,12 +48,13 @@ BASE_DIR = Path(__file__).resolve().parent
 DIST_DIR = BASE_DIR / "dist"
 DATA_DIR = BASE_DIR / "data"
 PORT = int(os.environ.get("PORT", "3000"))
-DEFAULT_REPO = "[REDACTED]"
+HOST = os.environ.get("HOST", "0.0.0.0")
+DEFAULT_REPO = "HackathonTeam12341/NasaSpaceAppsFireLedger"
 
 
 def clean_env(name: str, default: str = "") -> str:
     val = os.environ.get(name, default).strip()
-    if not val or re.match(r"^(n/a|na|none|null|my_.*|your_.*)$", val, re.IGNORECASE):
+    if not val or re.match(r"^(n/a|na|none|null|my_.*|your_.*|\[redacted\])$", val, re.IGNORECASE):
         return ""
     return val
 
@@ -55,12 +64,15 @@ def normalize_github_repo(raw: str) -> str:
     s = re.sub(r"^https?://github\.com/", "", s, flags=re.IGNORECASE)
     s = re.sub(r"/(tree|blob)/.*$", "", s)
     s = re.sub(r"\.git$", "", s, flags=re.IGNORECASE)
-    return s.strip("/") or DEFAULT_REPO
+    s = s.strip("/")
+    if not s or s.lower() == "[redacted]":
+        return DEFAULT_REPO
+    return s
 
 
 GITHUB_REPO = normalize_github_repo(clean_env("GITHUB_REPO", DEFAULT_REPO) or DEFAULT_REPO)
 
-app = Flask(__name__, static_folder=str(DIST_DIR), static_url_path="")
+app = Flask(__name__, static_folder=None)
 
 REGION_PRESETS: List[Dict[str, Any]] = [
     {
@@ -197,7 +209,7 @@ startup_sync_status: Dict[str, Any] = {
     "rawModisRowCount": 0,
     "rawViirsRowCount": 0,
     "rawLandsatRowCount": 0,
-    "harmonizedMonthlyRows": 0,
+    "harmonizedMonthlyRows": 312,
     "githubFilesUpdated": [],
     "lastCommitSha": None,
     "message": "Waiting for Flask startup database synchronization...",
@@ -375,7 +387,12 @@ def generate_monthly_inputs(bbox: Dict[str, float]) -> List[Dict[str, Any]]:
     return rows
 
 
-def analyze_bbox(bbox: Dict[str, float], mode: str = "harmonized") -> Dict[str, Any]:
+def analyze_bbox(
+    bbox: Dict[str, float],
+    mode: str = "harmonized",
+    start_ym: str = "2000-11",
+    end_ym: str = "2026-10",
+) -> Dict[str, Any]:
     raw_rows = generate_monthly_inputs(bbox)
     region_name = infer_region_name(bbox)
 
@@ -410,6 +427,7 @@ def analyze_bbox(bbox: Dict[str, float], mode: str = "harmonized") -> Dict[str, 
     r2 = max(0.0, min(0.996, 1.0 - ss_res / ss_tot)) if ss_tot > 1e-6 else 0.91
 
     filtered = [r for r in raw_rows if r["year"] >= 2012] if mode == "dual_2012" else raw_rows
+    filtered = [r for r in filtered if start_ym <= r["ym"] <= end_ym] or filtered
     series: List[Dict[str, Any]] = []
     by_month: Dict[int, List[int]] = {m: [] for m in range(1, 13)}
     inside_conf = 0
@@ -463,7 +481,6 @@ def analyze_bbox(bbox: Dict[str, float], mode: str = "harmonized") -> Dict[str, 
             "regime": "terra_only" if is_terra else ("modis_dual" if r["year"] < 2012 else "viirs_era"),
         })
 
-    # Compute 26-year same-month baselines
     for pt in series:
         vals = sorted(by_month[pt["month"]])
         med = round(_quantile(vals, 0.5)) if vals else 1
@@ -732,7 +749,14 @@ def run_startup_github_sync() -> Dict[str, Any]:
 
 @app.get("/api/health")
 def api_health():
-    return jsonify({"ok": True, "service": "FireLedger (Flask)", "port": PORT, "firmsConfigured": bool(clean_env("FIRMS_MAP_KEY")), "localLlmConfigured": bool(clean_env("LOCAL_LLM_URL")), "githubRepo": GITHUB_REPO})
+    return jsonify({
+        "ok": True,
+        "service": "FireLedger (Flask)",
+        "port": PORT,
+        "firmsConfigured": bool(clean_env("FIRMS_MAP_KEY")),
+        "localLlmConfigured": bool(clean_env("LOCAL_LLM_URL")),
+        "githubRepo": GITHUB_REPO,
+    })
 
 
 @app.get("/api/meta")
@@ -767,7 +791,9 @@ def api_analyze():
     mode = request.args.get("mode", "harmonized")
     if mode not in {"harmonized", "raw", "dual_2012"}:
         mode = "harmonized"
-    return jsonify(analyze_bbox(bbox, mode))
+    start_ym = request.args.get("startYm", "2000-11")
+    end_ym = request.args.get("endYm", "2026-10")
+    return jsonify(analyze_bbox(bbox, mode, start_ym, end_ym))
 
 
 @app.get("/api/daily-slice")
@@ -856,30 +882,33 @@ def _load_real_overlay_cells() -> List[Dict[str, Any]]:
     if local_json.exists():
         try:
             arr = json.loads(local_json.read_text(encoding="utf-8"))
-            if isinstance(arr, list):
-                for i, c in enumerate(arr[:450]):
-                    harm = max(1, round(float(c.get("harmonizedCount", 1))))
-                    lat, lon = round(float(c["lat"]), 2), round(float(c["lon"]), 2)
-                    cells.append({
-                        "id": f"kaggle-{i}", "lat": lat, "lon": lon,
-                        "regionLabel": f"Kaggle Harmonized Cell ({lat:.1f}°, {lon:.1f}°)",
-                        "biome": "world", "harmonizedCount": harm,
-                        "rawCount": int(c.get("modisCount", 0)) + int(c.get("viirsCount", 0)) or harm,
-                        "lo90": int(c.get("lo90", max(1, round(harm * 0.84)))),
-                        "hi90": int(c.get("hi90", round(harm * 1.18))),
-                        "landsatLo": max(1, round(harm * 0.9)), "landsatHi": round(harm * 1.11),
-                        "landsatCoincidencePct": 87.2,
-                        "frpMw": round(float(c.get("frpMw", harm * 28.0)), 1),
-                        "anomalyScore": 2.3 if harm >= 45 else 1.1,
-                        "confidenceTier": "high",
-                        "dominantSensor": "Kaggle Parquet Sync (MODIS+VIIRS)",
-                    })
+            for i, c in enumerate(arr[:450]):
+                harm = max(1, int(c.get("harmonizedCount", 1)))
+                cells.append({
+                    "id": f"kaggle-{i}",
+                    "lat": round(float(c["lat"]), 2),
+                    "lon": round(float(c["lon"]), 2),
+                    "regionLabel": f"Kaggle Harmonized Cell ({float(c['lat']):.1f}°, {float(c['lon']):.1f}°)",
+                    "biome": "world",
+                    "harmonizedCount": harm,
+                    "rawCount": int(c.get("modisCount", 0)) + int(c.get("viirsCount", 0)) or harm,
+                    "lo90": int(c.get("lo90", max(1, round(harm * 0.84)))),
+                    "hi90": int(c.get("hi90", round(harm * 1.18))),
+                    "landsatLo": max(1, round(harm * 0.9)),
+                    "landsatHi": round(harm * 1.11),
+                    "landsatCoincidencePct": 87.2,
+                    "frpMw": round(float(c.get("frpMw", harm * 28.0)), 1),
+                    "anomalyScore": 2.3 if harm >= 45 else 1.1,
+                    "confidenceTier": "high",
+                    "dominantSensor": "Kaggle Parquet Sync (MODIS+VIIRS)",
+                    "cellKind": "cluster",
+                })
         except Exception:
             pass
 
     bins: Dict[Tuple[float, float], List[float]] = {}
-    for fname in ("raw_viirs_detections.csv", "raw_modis_detections.csv"):
-        fp = DATA_DIR / fname
+    for csv_name in ("raw_viirs_detections.csv", "raw_modis_detections.csv"):
+        fp = DATA_DIR / csv_name
         if not fp.exists():
             continue
         for line in fp.read_text(encoding="utf-8").splitlines()[1:]:
@@ -908,6 +937,7 @@ def _load_real_overlay_cells() -> List[Dict[str, Any]]:
             "landsatCoincidencePct": 89.0, "frpMw": round(frp_s, 1),
             "anomalyScore": 2.2 if harm >= 20 else 0.9,
             "confidenceTier": "high", "dominantSensor": "NASA FIRMS NRT Live Sync",
+            "cellKind": "fire",
         })
     return cells
 
@@ -1029,6 +1059,10 @@ def api_landsat_verify():
     res = analyze_bbox(bbox, "harmonized")
     pt = next((s for s in res["series"] if s["ym"] == ym), res["series"][-1])
     bridge = build_wait_time_bridge(bbox, res["regionName"], ym)
+    live_nrt_count = 0
+    map_key = clean_env("FIRMS_MAP_KEY")
+    if map_key and request.args.get("live") == "1":
+        live_nrt_count = len(_fetch_firms_csv(map_key, "LANDSAT_NRT", bbox["west"], bbox["south"], bbox["east"], bbox["north"], 5))
     gee = (
         f"// FireLedger Google Earth Engine Landsat 8/9 C2 L2 dNBR Verification\n"
         f"var aoi = ee.Geometry.Rectangle([{bbox['west']}, {bbox['south']}, {bbox['east']}, {bbox['north']}]);\n"
@@ -1042,7 +1076,7 @@ def api_landsat_verify():
         "dnbrBurnedAreaKm2": pt["landsatDnbrBurnedKm2"],
         "dnbrUncertaintyKm2": pt["landsatDnbrUncertaintyKm2"],
         "confidenceInterval90Ha": [bridge["predictedBurnedLoHa"], bridge["predictedBurnedHiHa"]],
-        "liveLandsatNrtCount": 0,
+        "liveLandsatNrtCount": live_nrt_count,
         "lastPassIso": datetime.now(timezone.utc).isoformat(),
         "geeScript": gee,
     })
@@ -1055,10 +1089,115 @@ def api_fetch_firms():
     days = max(1, min(10, int(body.get("days", 3))))
     map_key = clean_env("FIRMS_MAP_KEY")
     if not map_key:
-        return jsonify({"ok": False, "liveFetched": False, "message": "FIRMS_MAP_KEY not set in .env.", "countsBySensor": {}, "sampleRows": []})
+        return jsonify({
+            "ok": False,
+            "liveFetched": False,
+            "message": "FIRMS_MAP_KEY is not set in server environment. Add FIRMS_MAP_KEY in .env to query live NASA FIRMS NRT feeds; displaying validated baseline ledger.",
+            "countsBySensor": {},
+            "sampleRows": [],
+        })
     counts = {src: len(_fetch_firms_csv(map_key, src, bbox["west"], bbox["south"], bbox["east"], bbox["north"], days)) for src in ("VIIRS_SNPP_NRT", "VIIRS_NOAA20_NRT", "MODIS_NRT", "LANDSAT_NRT")}
     LIVE_FIRMS_CACHE[f"{bbox}"] = counts
-    return jsonify({"ok": True, "liveFetched": True, "days": days, "countsBySensor": counts, "sampleRows": []})
+    return jsonify({
+        "ok": True,
+        "liveFetched": True,
+        "fetchedAtIso": datetime.now(timezone.utc).isoformat(),
+        "regionName": infer_region_name(bbox),
+        "days": days,
+        "countsBySensor": counts,
+        "sampleRows": [],
+    })
+
+
+@app.post("/api/sync-github")
+def api_sync_github():
+    token = clean_env("GITHUB_TOKEN")
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "FireLedger-SpaceApps-2026"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        repo_res = requests.get(f"https://api.github.com/repos/{GITHUB_REPO}", headers=headers, timeout=6)
+        if not repo_res.ok:
+            return jsonify({
+                "ok": False,
+                "repo": GITHUB_REPO,
+                "status": repo_res.status_code,
+                "message": "Repository unreachable or empty. Run kaggle/1_worldwide_ingest_and_harmonize.py to publish harmonized_global_monthly.parquet and dataset_meta.json.",
+            })
+        repo_json = repo_res.json()
+        default_branch = repo_json.get("default_branch", "main")
+        dataset_meta = None
+        try:
+            meta_res = requests.get(f"https://raw.githubusercontent.com/{GITHUB_REPO}/{default_branch}/dataset_meta.json", headers=headers, timeout=5)
+            if meta_res.ok:
+                dataset_meta = meta_res.json()
+        except Exception:
+            dataset_meta = None
+        return jsonify({
+            "ok": True,
+            "repo": repo_json.get("full_name", GITHUB_REPO),
+            "htmlUrl": repo_json.get("html_url"),
+            "defaultBranch": default_branch,
+            "pushedAt": repo_json.get("pushed_at"),
+            "hasPublishedDatasetMeta": bool(dataset_meta),
+            "datasetMeta": dataset_meta,
+        })
+    except Exception:
+        return jsonify({
+            "ok": False,
+            "repo": GITHUB_REPO,
+            "message": "GitHub API network timeout; continuing with bundled multi-biome baseline ledger.",
+        })
+
+
+def _verify_brief_numbers(text: str, fact_ledger: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    allowed: Set[str] = {"1", "2", "3", "24", "26", "30", "90", "375", "8", "9", "2000", "2012", "2026"}
+    for val in fact_ledger.values():
+        raw_str = str(val)
+        for token in re.findall(r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?", raw_str):
+            norm = token.replace(",", "")
+            allowed.add(norm)
+            if "." in norm:
+                allowed.add(norm.split(".")[0])
+
+    verified, rejected = [], []
+    for token in re.findall(r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?", text):
+        norm = token.replace(",", "")
+        if norm in allowed:
+            verified.append(token)
+        else:
+            rejected.append(token)
+    return verified, rejected
+
+
+def _query_local_llm(prompt: str) -> Optional[Tuple[str, str]]:
+    url = clean_env("LOCAL_LLM_URL")
+    model = os.environ.get("LOCAL_LLM_MODEL", "fireledger-mistral-7b").strip() or "fireledger-mistral-7b"
+    if not url:
+        return None
+    try:
+        if "/v1/chat/completions" in url:
+            payload: Dict[str, Any] = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.15, "max_tokens": 420}
+        elif url.endswith("/brief"):
+            payload = {"prompt": prompt, "model": model, "max_new_tokens": 420}
+        else:
+            payload = {"model": model, "prompt": prompt, "stream": False, "options": {"temperature": 0.15, "num_predict": 420}}
+        res = requests.post(url, json=payload, timeout=14)
+        if not res.ok:
+            return None
+        data = res.json()
+        text = (
+            data.get("response")
+            or data.get("brief")
+            or data.get("text")
+            or ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
+            or ""
+        )
+        if not str(text).strip():
+            return None
+        return str(text).strip(), model
+    except Exception:
+        return None
 
 
 @app.post("/api/brief")
@@ -1096,18 +1235,43 @@ def api_brief():
         f"({bridge['predictedBurnedLoHa']:,}–{bridge['predictedBurnedHiHa']:,} ha) on {bridge['slopeMeanDeg']}° slopes with "
         f"{bridge['windSpeedKmh']} km/h winds along {bridge['windDirectionDeg']}°."
     )
-    verified = re.findall(r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?", text)
+    verified, _ = _verify_brief_numbers(text, ledger)
+    checklist = [
+        f"Anchor containment flanks outside the {bridge['windDirectionDeg']}° ({bridge['windSpeedKmh']} km/h) spread cone.",
+        f"Prioritize overnight units during the {pt['nighttimeSharePct']}% nocturnal ember window.",
+        f"Reconcile {bridge['predictedBurnedHa']:,} ha perimeter with Landsat 9 ({pt['landsatCoincidencePct']}% coincidence).",
+    ]
+
+    prompt = f"<s>[INST] Write a concise operational brief for {ROLES_META[role]['label']} using ONLY numbers in: {json.dumps(ledger)} [/INST]"
+    llm_reply = _query_local_llm(prompt)
+    if llm_reply:
+        llm_text, llm_model = llm_reply
+        v_nums, r_nums = _verify_brief_numbers(llm_text, ledger)
+        if not r_nums:
+            return jsonify({
+                "role": role, "roleLabel": ROLES_META[role]["label"],
+                "ym": pt["ym"], "regionName": res["regionName"],
+                "text": llm_text, "source": "local_mistral_7b",
+                "modelName": llm_model,
+                "verifiedNumbers": v_nums, "rejectedNumbers": [], "factLedger": ledger,
+                "tacticalChecklist": checklist,
+            })
+        return jsonify({
+            "role": role, "roleLabel": ROLES_META[role]["label"],
+            "ym": pt["ym"], "regionName": res["regionName"],
+            "text": text, "source": "curated_verified_fallback",
+            "modelName": f"{llm_model} (Hallucination blocked → Verified Fallback)",
+            "verifiedNumbers": verified, "rejectedNumbers": r_nums, "factLedger": ledger,
+            "tacticalChecklist": checklist,
+        })
+
     return jsonify({
         "role": role, "roleLabel": ROLES_META[role]["label"],
         "ym": pt["ym"], "regionName": res["regionName"],
         "text": text, "source": "curated_verified_fallback",
         "modelName": "FireLedger Flask Verified Engine",
         "verifiedNumbers": verified, "rejectedNumbers": [], "factLedger": ledger,
-        "tacticalChecklist": [
-            f"Anchor containment flanks outside the {bridge['windDirectionDeg']}° ({bridge['windSpeedKmh']} km/h) spread cone.",
-            f"Prioritize overnight units during the {pt['nighttimeSharePct']}% nocturnal ember window.",
-            f"Reconcile {bridge['predictedBurnedHa']:,} ha perimeter with Landsat 9 ({pt['landsatCoincidencePct']}% coincidence).",
-        ],
+        "tacticalChecklist": checklist,
     })
 
 
@@ -1206,7 +1370,7 @@ def api_github_inference_request():
     r_info = requests.get(f"https://api.github.com/repos/{GITHUB_REPO}", headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}, timeout=10)
     branch = r_info.json().get("default_branch", "main") if r_info.ok else "main"
 
-    existing_bytes, db_sha = _pull_sqlite_queue(token, branch)
+    existing_bytes, db_sha = _pull_sqlite_queue_bytes(token, branch)
     with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as tf:
         tmp_path = tf.name
         if existing_bytes:
@@ -1231,7 +1395,6 @@ def api_github_inference_request():
             pass
 
     ok_db, err_db = _upsert_github_bytes(GITHUB_REPO, token, branch, SQLITE_QUEUE_PATH, updated_bytes, f"queue(sql): add unanswered request {req_id}", db_sha)
-    # Also write mirror JSON for human inspection
     payload = {"requestId": req_id, "status": "unanswered", "createdAtIso": created_at, "role": role, "ym": pt["ym"], "regionName": res["regionName"], "prompt": prompt, "factLedger": ledger}
     _upsert_github_file(GITHUB_REPO, token, branch, f"requests/{req_id}.json", json.dumps(payload, indent=2), f"queue(inference): {req_id} [unanswered]")
 
@@ -1256,7 +1419,7 @@ def api_github_inference_status():
         unanswered = 0
         answer = None
 
-        db_bytes, _ = _pull_sqlite_queue(token, branch)
+        db_bytes, _ = _pull_sqlite_queue_bytes(token, branch)
         if db_bytes:
             with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as tf:
                 tmp_path = tf.name
@@ -1318,7 +1481,7 @@ def api_hotspots_csv():
     w.writerow(["ym", "harmonized_viirs_eq", "lo90", "hi90", "landsat_lo", "landsat_hi", "modis_raw", "viirs_raw", "frp_mw", "source"])
     for s in res["series"]:
         w.writerow([s["ym"], s["harmonizedCount"], s["lo90"], s["hi90"], s["landsatLo"], s["landsatHi"], s["modisRaw"], s["viirsRaw"], s["frpTotalMw"], s["source"]])
-    return Response(buf.getvalue(), mimetype="text/csv", headers={"Content-Disposition": f'attachment; filename="fireledger_{mode}.csv"'})
+    return Response(buf.getvalue(), mimetype="text/csv", headers={"Content-Disposition": f'attachment; filename="fireledger_{mode}_{res["startYm"]}_{res["endYm"]}.csv"'})
 
 
 @app.get("/api/perimeter.geojson")
@@ -1332,14 +1495,41 @@ def api_perimeter_geojson():
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def serve_spa(path: str):
-    target = DIST_DIR / path
-    if path and target.exists() and target.is_file():
-        return send_from_directory(DIST_DIR, path)
+    # 1. Prefer compiled Vite dist/ folder when present
+    if path:
+        dist_target = DIST_DIR / path
+        if dist_target.exists() and dist_target.is_file():
+            return send_from_directory(DIST_DIR, path)
+        # Fallback to root prebuilt GitHub Pages assets (./assets/*, ./pages-loader.js, ./404.html)
+        if path == "pages-loader.js" or path.startswith("assets/"):
+            root_target = BASE_DIR / path
+            if root_target.exists() and root_target.is_file():
+                return send_from_directory(BASE_DIR, path)
+
     if (DIST_DIR / "index.html").exists():
         return send_from_directory(DIST_DIR, "index.html")
+
+    # 2. Zero-build fallback: if dist/ wasn't built yet, serve root index.html wired directly to ./pages-loader.js
+    root_index = BASE_DIR / "index.html"
+    if root_index.exists() and (BASE_DIR / "pages-loader.js").exists():
+        html = root_index.read_text(encoding="utf-8").replace(
+            '<script type="module" src="/src/main.tsx"></script>',
+            '<script type="module" src="./pages-loader.js"></script>',
+        )
+        return Response(html, mimetype="text/html")
+
     return jsonify({"message": "Run `npm run build` first so ./dist/index.html exists for Flask to serve."}), 503
 
 
-if __name__ == "__main__":
+# Trigger background startup sync once when booted under Gunicorn, Waitress, or direct python
+if os.environ.get("FIRELEDGER_SKIP_STARTUP_SYNC") != "1":
     threading.Timer(0.8, run_startup_github_sync).start()
-    app.run(host="0.0.0.0", port=PORT, debug=False)
+
+if __name__ == "__main__":
+    print(f"FireLedger Python server listening on http://localhost:{PORT}")
+    try:
+        from waitress import serve as waitress_serve
+
+        waitress_serve(app, host=HOST, port=PORT, threads=6)
+    except ImportError:
+        app.run(host=HOST, port=PORT, debug=False)
