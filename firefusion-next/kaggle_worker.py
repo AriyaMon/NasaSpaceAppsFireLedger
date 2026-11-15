@@ -64,29 +64,35 @@ def initialize_database():
         CREATE TABLE IF NOT EXISTS requests(
           request_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, request_type TEXT NOT NULL,
           created_at TEXT NOT NULL, status TEXT NOT NULL, role TEXT NOT NULL,
-          south REAL, west REAL, north REAL, east REAL, message TEXT NOT NULL,
+          area TEXT, time_start TEXT, time_end TEXT, message TEXT NOT NULL,
           context_request_id TEXT, ai_answer TEXT, error TEXT);
         CREATE TABLE IF NOT EXISTS conversations(
-          conversation_id TEXT PRIMARY KEY, role TEXT NOT NULL, created_at TEXT NOT NULL);
+          conversation_id TEXT PRIMARY KEY, created_at TEXT, role TEXT, area TEXT,
+          time_start TEXT, time_end TEXT);
         CREATE TABLE IF NOT EXISTS messages(
           message_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, request_id TEXT NOT NULL,
           sender TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS summaries(
           summary_id TEXT PRIMARY KEY, request_id TEXT NOT NULL, content TEXT NOT NULL,
-          created_at TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+          fact_ledger TEXT, dataset_version TEXT, model_version TEXT, created_at TEXT);
+        CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS fire_observations(
           observation_id TEXT PRIMARY KEY, observed_at TEXT NOT NULL, country TEXT NOT NULL,
           latitude REAL NOT NULL, longitude REAL NOT NULL, fire_type TEXT,
           frp_mw REAL, confidence REAL, population_nearby INTEGER,
           nearest_place TEXT, distance_to_population_km REAL, source TEXT);
-        CREATE INDEX IF NOT EXISTS idx_fire_date_country ON fire_observations(country, observed_at);
-        CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status, created_at);
-        INSERT OR REPLACE INTO metadata(key,value) VALUES
-          ('project','FireFusion'),('analysis_scope','Canada only; calendar year 2023'),
-          ('dataset_status','Awaiting 2023 Canada observations');
         """)
-    print("Database ready:", DB_FILE)
+        # Upgrade the original FireLedger schema without replacing its tables/data.
+        columns = {r["name"] for r in c.execute("PRAGMA table_info(requests)")}
+        for name, kind in [("south","REAL"),("west","REAL"),("north","REAL"),("east","REAL")]:
+            if name not in columns:
+                c.execute(f"ALTER TABLE requests ADD COLUMN {name} {kind}")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status,created_at)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_fire_date_country ON fire_observations(country,observed_at)")
+        c.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('project','FireLedger')")
+        c.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('analysis_scope','Canada only; calendar year 2023')")
+        c.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('dataset_status','Awaiting 2023 Canada observations')")
+    print("Existing GitHub SQL database initialized/upgraded:", DB_FILE)
 
 # Restore first, then initialize/upgrade the same database.
 restore_database()
