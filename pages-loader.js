@@ -4,4 +4,4 @@ const link = document.createElement('link');
 link.rel = 'stylesheet';
 link.href = new URL('./assets/index-BULxW6De.css', import.meta.url).href;
 document.head.appendChild(link);
-import('./assets/index-SY6bVrAF.js');
+import('./assets/index-BNhjHj46.js');
