@@ -192,8 +192,11 @@ def process_pending():
         with connect() as c:
             c.execute("UPDATE requests SET status='completed',ai_answer=?,error=NULL WHERE request_id=?",
                       (answer, job["request_id"]))
-            c.execute("INSERT INTO summaries VALUES(?,?,?,?)",
-                      (str(uuid.uuid4()), job["request_id"], answer, stamp()))
+            c.execute("""INSERT INTO summaries
+                      (summary_id,request_id,content,fact_ledger,dataset_version,model_version,created_at)
+                      VALUES(?,?,?,?,?,?,?)""",
+                      (str(uuid.uuid4()),job["request_id"],answer,json.dumps(facts),
+                       "Canada-2023","Mistral-7B-LoRA" if HF_TOKEN else "grounded-fallback",stamp()))
             c.execute("INSERT INTO messages VALUES(?,?,?,?,?,?)",
                       (str(uuid.uuid4()), job["conversation_id"], job["request_id"], "assistant", answer, stamp()))
         sync_database()
@@ -252,9 +255,10 @@ def create_request(body: RequestBody):
     with connect() as c:
         c.execute("INSERT OR IGNORE INTO conversations VALUES(?,?,?)", (cid, body.role, ts))
         c.execute("""INSERT INTO requests(request_id,conversation_id,request_type,created_at,status,role,
-          south,west,north,east,message,context_request_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-          (rid,cid,body.request_type,ts,"pending",body.role,b["south"],b["west"],b["north"],b["east"],
-           body.message,body.context_request_id))
+          area,time_start,time_end,south,west,north,east,message,context_request_id)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+          (rid,cid,body.request_type,ts,"pending",body.role,json.dumps(b),"2023-01-01","2023-12-31",
+           b["south"],b["west"],b["north"],b["east"],body.message,body.context_request_id))
         c.execute("INSERT INTO messages VALUES(?,?,?,?,?,?)",
           (str(uuid.uuid4()),cid,rid,"user",body.message,ts))
     sync_database()
