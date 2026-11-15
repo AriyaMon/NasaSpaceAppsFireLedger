@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#101b24">
+  <title>FireFusion | Response Intelligence</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="./styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+</head>
+<body>
+<div class="shell">
+  <div id="map" class="map"></div>
+  <header class="topbar"><a class="brand" href="./">🔥 Fire<span>Fusion</span></a><div class="top-label">WILDFIRE RESPONSE INTELLIGENCE</div><div id="connection" class="connection offline">BACKEND OFFLINE</div></header>
+  <aside class="left-panel">
+    <div class="eyebrow">GEOSPATIAL OPERATIONS</div><h1>Response map</h1><p class="muted">Select an area to generate a role-specific intelligence briefing from the harmonized fire dataset.</p>
+    <div class="section-title">DATA LAYERS</div>
+    <label class="layer-row"><input id="cells-toggle" type="checkbox" checked> <span class="swatch"></span> Harmonized detections <b id="cell-count">Loading…</b></label>
+    <div class="legend"><span>LOW</span><i></i><span>HIGH ACTIVITY</span></div>
+    <button id="select-area" class="secondary full">▱ Select map area</button>
+    <div id="selection-status" class="selection-status">No area selected. Draw a rectangle on the map.</div>
+    <div class="section-title">RESPONDER PROFILE</div>
+    <select id="role">
+      <option value="Emergency responder">Emergency responder</option>
+      <option value="Firefighter">Firefighter</option>
+      <option value="Ambulance">Ambulance / medical</option>
+      <option value="Scientist">Scientist / analyst</option>
+      <option value="Land manager">Land manager</option>
+    </select>
+    <label class="field-label" for="start-date">TIME PERIOD START</label><input id="start-date" type="date">
+    <label class="field-label" for="end-date">TIME PERIOD END</label><input id="end-date" type="date">
+    <label class="field-label" for="question">WHAT DO YOU NEED TO KNOW?</label>
+    <textarea id="question" rows="3" placeholder="e.g. Summarize the highest-activity zones and operational considerations."></textarea>
+    <button id="generate" class="primary full" disabled>Generate intelligence briefing →</button>
+    <p class="fine">Decision support only. Verify conditions with official emergency services and live sources before acting.</p>
+  </aside>
+  <aside class="right-panel">
+    <div class="panel-head"><div><div class="eyebrow">AI FIELD ASSISTANT</div><h2>Mission briefing</h2></div><span id="request-state" class="state">IDLE</span></div>
+    <div id="briefing" class="briefing empty">Select an area and generate a briefing. Results will appear here.</div>
+    <div class="section-title">FOLLOW-UP</div>
+    <div id="chat-log" class="chat-log"><div class="chat-placeholder">Ask a follow-up about the selected area after the first briefing is ready.</div></div>
+    <div class="chat-compose"><textarea id="chat-input" rows="2" placeholder="Ask about this area…"></textarea><button id="send-chat" class="primary" disabled>Send</button></div>
+    <div class="fine">AI outputs are grounded in the dataset snapshot available to the Kaggle worker. They are not live dispatch instructions.</div>
+  </aside>
+  <footer class="statusbar"><span id="map-status">MAP READY</span><span id="coords">—</span><span id="zoom">ZOOM —</span><span id="dataset-status">DATASET: LOADING</span></footer>
+</div>
+<script type="module" src="./app.js"></script>
+</body></html>
