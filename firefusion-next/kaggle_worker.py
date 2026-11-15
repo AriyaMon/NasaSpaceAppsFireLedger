@@ -97,6 +97,7 @@ def initialize_database():
 # Restore first, then initialize/upgrade the same database.
 restore_database()
 initialize_database()
+sync_database()  # Creates Database/fireledger.db on GitHub if it does not exist yet.
 
 def canada_2023_observations(bounds=None):
     sql = """SELECT * FROM fire_observations
