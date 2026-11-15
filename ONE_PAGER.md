@@ -1,6 +1,5 @@
 # 📄 FireLedger (PyroBridge) — Executive One-Pager
 
-> 🎨 **Prefer a Clean, Magazine-Style Visual View (No Code UI)?**  
 > 👉 [**Open the Interactive Visual One-Pager (`one-pager.html`) in Your Browser**](https://hackathonteam12341.github.io/NasaSpaceAppsFireLedger/one-pager.html)  
 > 🚀 [**Launch the Live Web Application**](https://hackathonteam12341.github.io/NasaSpaceAppsFireLedger/)  
 
