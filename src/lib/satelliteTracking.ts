@@ -80,7 +80,7 @@ export async function loadTles():Promise<Record<string,string>> {
     return await r.json() as {tles:Record<string,string>};
   }).catch(()=>null);
   if(backend?.tles&&Object.keys(backend.tles).length)return backend.tles;
-  // Static GitHub Pages: direct CelesTrak request; browsers may block it via CORS.
+  // Static hosting: use the deploy-time orbital snapshot first.\n  try {\n    const snapshot = await fetch(import.meta.env.BASE_URL + 'satellite-tles.json', { signal: AbortSignal.timeout(8000) });\n    if (snapshot.ok) {\n      const body = await snapshot.json() as {tles?: Record<string,string>};\n      if (body.tles && Object.values(body.tles).some(Boolean)) return body.tles;\n    }\n  } catch { /* fall back to a direct request */ }\n  // Direct CelesTrak request; browsers may block it via CORS.
   const entries=await Promise.all(SATELLITES.map(async s=>{
     try{
       const r=await fetch('https://celestrak.org/NORAD/elements/gp.php?CATNR='+s.norad+'&FORMAT=TLE',{signal:AbortSignal.timeout(12000)});
